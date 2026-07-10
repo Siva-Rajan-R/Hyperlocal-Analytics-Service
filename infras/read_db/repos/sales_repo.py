@@ -151,7 +151,7 @@ class SalesRepo(AnalyticsBaseRepo):
             if end_date:
                 filters["timestamp"]["$lte"] = end_date
 
-        return await self.aggregate([
+        cursor = self.daily.aggregate([
             {"$match": filters},
             {
                 "$group": {
@@ -167,6 +167,7 @@ class SalesRepo(AnalyticsBaseRepo):
             },
             {"$sort": {"_id": 1}},
         ])
+        return await cursor.to_list(length=None)
 
     async def dashboard(self, shop_id: str):
         return {

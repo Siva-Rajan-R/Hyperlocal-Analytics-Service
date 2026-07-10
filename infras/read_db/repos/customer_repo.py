@@ -154,12 +154,11 @@ class CustomerRepo(AnalyticsBaseRepo):
             elif sales_type.upper() == "OFFLINE":
                 sort_field = "total_offline_sales_amount"
 
-        return await self.aggregate([
-            {"$match": {"shop_id": shop_id}},
-            {"$sort": {sort_field: -1}},
-            {"$limit": limit},
-            {"$project": {"_id": 0}},
-        ])
+        cursor = self.breakdown.find(
+            {"shop_id": shop_id},
+            {"_id": 0}
+        ).sort(sort_field, -1).limit(limit)
+        return await cursor.to_list(length=None)
 
     async def customer_trend(
         self,

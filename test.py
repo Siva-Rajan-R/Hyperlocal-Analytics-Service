@@ -1,5 +1,0 @@
-import requests
-
-
-APP_ID="TEST107401654fad43cacb2c409c0c8b56104701"
-APP_SECRET="cfsk_ma_test_f06895ecb53ad98160bac82c1aa110fd_737883de"

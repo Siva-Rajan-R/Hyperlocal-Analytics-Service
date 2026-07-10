@@ -1,6 +1,6 @@
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 from ..main import ANALYTICS_COLLECTIONS
 
@@ -22,6 +22,109 @@ class ProdInvRepo(AnalyticsBaseRepo):
             unique=True,
         )
         await self.breakdown.create_index([("shop_id", 1), ("timestamp", -1)])
+
+    @staticmethod
+    def _stock_state(stock_value: float) -> Tuple[bool, float]:
+        stock = max(float(stock_value or 0), 0.0)
+        return stock > 0, 1.0 if stock <= 0 else 0.0
+
+    @staticmethod
+    def _overall_state_delta(previous_doc: Optional[dict], next_stock: float) -> dict:
+        was_active = bool(previous_doc.get("is_active")) if previous_doc else False
+        was_no_stock = float((previous_doc or {}).get("no_stocks") or 0) > 0
+        is_active, next_no_stock = ProdInvRepo._stock_state(next_stock)
+        is_no_stock = next_no_stock > 0
+
+        delta = {}
+        if was_active != is_active:
+            delta["total_active_products"] = 1 if is_active else -1
+            delta["total_inactive_product"] = -1 if is_active else 1
+        if was_no_stock != is_no_stock:
+            delta["total_no_stocks"] = 1 if is_no_stock else -1
+        return delta
+
+    async def _apply_stock_state(
+        self,
+        shop_id: str,
+        product_id: str,
+        variant_id: str,
+        batch_id: str,
+        stock_delta: float,
+        extra_inc: Optional[dict] = None,
+        extra_set: Optional[dict] = None,
+        count_overall_state: bool = True,
+    ):
+        query = {
+            "shop_id": shop_id,
+            "product_id": product_id,
+            "variant_id": variant_id or "",
+            "batch_id": batch_id or "",
+        }
+        current = await self.breakdown.find_one(query, {"_id": 0})
+        previous_stock = float((current or {}).get("stocks") or 0)
+        next_stock = max(previous_stock + float(stock_delta or 0), 0.0)
+        is_active, no_stock = self._stock_state(next_stock)
+        overall_delta = self._overall_state_delta(current, next_stock) if count_overall_state else {}
+
+        inc_fields = {"stocks": float(stock_delta or 0)}
+        if extra_inc:
+            inc_fields.update(extra_inc)
+
+        set_fields = {
+            "shop_id": shop_id,
+            "product_id": product_id,
+            "variant_id": variant_id or "",
+            "batch_id": batch_id or "",
+            "stocks": next_stock,
+            "is_active": is_active,
+            "no_stocks": no_stock,
+            "timestamp": datetime.utcnow(),
+        }
+        if extra_set:
+            set_fields.update(extra_set)
+
+        update_doc = {
+            "$set": set_fields,
+            "$setOnInsert": {
+                "low_stocks": 0,
+                "total_purchases": 0,
+                "total_purchase_amounts": 0,
+                "total_purchase_outstanding_amounts": 0,
+                "total_offline_sales": 0,
+                "total_offline_sales_amount": 0,
+                "total_online_sales": 0,
+                "total_online_sales_amount": 0,
+                "total_stockmovadj_increments": 0,
+                "total_stockmovadj_decrements": 0,
+            },
+        }
+        metric_inc_fields = {k: v for k, v in inc_fields.items() if k != "stocks"}
+        if metric_inc_fields:
+            update_doc["$inc"] = metric_inc_fields
+
+        await self.breakdown.update_one(
+            query,
+            update_doc,
+            upsert=True,
+        )
+
+        return overall_delta
+
+    async def _apply_product_stock_state(
+        self,
+        shop_id: str,
+        product_id: str,
+        stock_delta: float,
+        extra_inc: Optional[dict] = None,
+    ):
+        return await self._apply_stock_state(
+            shop_id=shop_id,
+            product_id=product_id,
+            variant_id="",
+            batch_id="",
+            stock_delta=stock_delta,
+            extra_inc=extra_inc,
+        )
 
     async def process_inventory_sync(self, payload: ProdInvAnalyticsSchema):
         active = inactive = 0
@@ -95,52 +198,37 @@ class ProdInvRepo(AnalyticsBaseRepo):
         amount: float,
         outstanding: float,
     ):
-        await self.breakdown.update_one(
-            {
-                "shop_id": shop_id,
-                "product_id": product_id,
-                "variant_id": variant_id or "",
-                "batch_id": batch_id or "",
-            },
-            {
-                "$inc": {
-                    "total_purchases": 1,
-                    "total_purchase_amounts": amount,
-                    "total_purchase_outstanding_amounts": outstanding,
-                    "stocks": stocks,
-                },
-                "$set": {"timestamp": datetime.utcnow()},
-            },
-            upsert=True,
+        purchase_inc = {
+            "total_purchases": 1,
+            "total_purchase_amounts": amount,
+            "total_purchase_outstanding_amounts": outstanding,
+        }
+        overall_delta = await self._apply_stock_state(
+            shop_id=shop_id,
+            product_id=product_id,
+            variant_id=variant_id or "",
+            batch_id=batch_id or "",
+            stock_delta=stocks,
+            extra_inc=purchase_inc,
+            count_overall_state=(variant_id or "") == "" and (batch_id or "") == "",
         )
 
         if (variant_id or "") != "" or (batch_id or "") != "":
-            await self.breakdown.update_one(
-                {
-                    "shop_id": shop_id,
-                    "product_id": product_id,
-                    "variant_id": "",
-                    "batch_id": "",
-                },
-                {
-                    "$inc": {
-                        "total_purchases": 1,
-                        "total_purchase_amounts": amount,
-                        "total_purchase_outstanding_amounts": outstanding,
-                        "stocks": stocks,
-                    },
-                    "$set": {"timestamp": datetime.utcnow()},
-                },
-                upsert=True,
+            product_delta = await self._apply_product_stock_state(
+                shop_id=shop_id,
+                product_id=product_id,
+                stock_delta=stocks,
+                extra_inc=purchase_inc,
             )
+            overall_delta.update(product_delta)
 
+        inc_fields = {"total_stocks": stocks}
+        inc_fields.update(overall_delta)
         await self.overall.update_one(
             {"shop_id": shop_id},
             {
-                "$inc": {
-                    "total_stocks": stocks,
-                },
-                "$set": {"timestamp": datetime.utcnow()},
+                "$inc": inc_fields,
+                "$set": {"shop_id": shop_id, "timestamp": datetime.utcnow()},
             },
             upsert=True,
         )
@@ -164,42 +252,34 @@ class ProdInvRepo(AnalyticsBaseRepo):
             inc_fields["total_stockmovadj_decrements"] = stocks
             inc_fields["stocks"] = -stocks
 
-        await self.breakdown.update_one(
-            {
-                "shop_id": shop_id,
-                "product_id": product_id,
-                "variant_id": variant_id or "",
-                "batch_id": batch_id or "",
-            },
-            {
-                "$inc": inc_fields,
-                "$set": {"timestamp": datetime.utcnow()},
-            },
-            upsert=True,
+        stock_delta = stocks if is_increment else -stocks
+        extra_inc = {k: v for k, v in inc_fields.items() if k != "stocks"}
+        overall_delta = await self._apply_stock_state(
+            shop_id=shop_id,
+            product_id=product_id,
+            variant_id=variant_id or "",
+            batch_id=batch_id or "",
+            stock_delta=stock_delta,
+            extra_inc=extra_inc,
+            count_overall_state=(variant_id or "") == "" and (batch_id or "") == "",
         )
 
         if (variant_id or "") != "" or (batch_id or "") != "":
-            await self.breakdown.update_one(
-                {
-                    "shop_id": shop_id,
-                    "product_id": product_id,
-                    "variant_id": "",
-                    "batch_id": "",
-                },
-                {
-                    "$inc": inc_fields,
-                    "$set": {"timestamp": datetime.utcnow()},
-                },
-                upsert=True,
+            product_delta = await self._apply_product_stock_state(
+                shop_id=shop_id,
+                product_id=product_id,
+                stock_delta=stock_delta,
+                extra_inc=extra_inc,
             )
+            overall_delta.update(product_delta)
 
+        inc_overall = {"total_stocks": stock_delta}
+        inc_overall.update(overall_delta)
         await self.overall.update_one(
             {"shop_id": shop_id},
             {
-                "$inc": {
-                    "total_stocks": stocks if is_increment else -stocks,
-                },
-                "$set": {"timestamp": datetime.utcnow()},
+                "$inc": inc_overall,
+                "$set": {"shop_id": shop_id, "timestamp": datetime.utcnow()},
             },
             upsert=True,
         )
@@ -226,42 +306,33 @@ class ProdInvRepo(AnalyticsBaseRepo):
             inc_fields["total_offline_sales"] = 1
             inc_fields["total_offline_sales_amount"] = amount
 
-        await self.breakdown.update_one(
-            {
-                "shop_id": shop_id,
-                "product_id": product_id,
-                "variant_id": variant_id or "",
-                "batch_id": batch_id or "",
-            },
-            {
-                "$inc": inc_fields,
-                "$set": {"timestamp": datetime.utcnow()},
-            },
-            upsert=True,
+        extra_inc = {k: v for k, v in inc_fields.items() if k != "stocks"}
+        overall_delta = await self._apply_stock_state(
+            shop_id=shop_id,
+            product_id=product_id,
+            variant_id=variant_id or "",
+            batch_id=batch_id or "",
+            stock_delta=-stocks,
+            extra_inc=extra_inc,
+            count_overall_state=(variant_id or "") == "" and (batch_id or "") == "",
         )
 
         if (variant_id or "") != "" or (batch_id or "") != "":
-            await self.breakdown.update_one(
-                {
-                    "shop_id": shop_id,
-                    "product_id": product_id,
-                    "variant_id": "",
-                    "batch_id": "",
-                },
-                {
-                    "$inc": inc_fields,
-                    "$set": {"timestamp": datetime.utcnow()},
-                },
-                upsert=True,
+            product_delta = await self._apply_product_stock_state(
+                shop_id=shop_id,
+                product_id=product_id,
+                stock_delta=-stocks,
+                extra_inc=extra_inc,
             )
+            overall_delta.update(product_delta)
 
+        inc_overall = {"total_stocks": -stocks}
+        inc_overall.update(overall_delta)
         await self.overall.update_one(
             {"shop_id": shop_id},
             {
-                "$inc": {
-                    "total_stocks": -stocks,
-                },
-                "$set": {"timestamp": datetime.utcnow()},
+                "$inc": inc_overall,
+                "$set": {"shop_id": shop_id, "timestamp": datetime.utcnow()},
             },
             upsert=True,
         )
@@ -303,6 +374,8 @@ class ProdInvRepo(AnalyticsBaseRepo):
             {
                 "shop_id": shop_id,
                 "product_id": product_id,
+                "variant_id": "",
+                "batch_id": "",
             },
             {"_id": 0},
         )
@@ -338,31 +411,44 @@ class ProdInvRepo(AnalyticsBaseRepo):
             {"_id": 0},
         )
     async def top_products(self, shop_id: str, limit: int = 10, sales_type: Optional[str] = None):
-        sort_field = "total_purchase_amounts"
-        if sales_type:
-            if sales_type.upper() == "ONLINE":
-                sort_field = "total_online_sales_amount"
-            elif sales_type.upper() == "OFFLINE":
-                sort_field = "total_offline_sales_amount"
-            
-        return await self.aggregate([
-            {"$match": {"shop_id": shop_id}},
-            {"$sort": {sort_field: -1}},
+        pipeline = [
+            {"$match": {"shop_id": shop_id, "variant_id": "", "batch_id": ""}},
+            {
+                "$addFields": {
+                    "total_sales_amounts": {
+                        "$add": [
+                            {"$ifNull": ["$total_online_sales_amount", 0]},
+                            {"$ifNull": ["$total_offline_sales_amount", 0]}
+                        ]
+                    },
+                    "total_sales_stocks": {
+                        "$add": [
+                            {"$ifNull": ["$total_online_sales", 0]},
+                            {"$ifNull": ["$total_offline_sales", 0]}
+                        ]
+                    }
+                }
+            },
+            {"$sort": {"total_sales_amounts": -1}},
             {"$limit": limit},
             {"$project": {"_id": 0}},
-        ])
+        ]
+        cursor = self.breakdown.aggregate(pipeline)
+        return await cursor.to_list(length=None)
 
     async def low_stock_products(self, shop_id: str):
-        return await self.find_many(
+        cursor = self.breakdown.find(
             {"shop_id": shop_id, "low_stocks": {"$gt": 0}},
-            sort=[("low_stocks", -1)],
-        )
+            {"_id": 0}
+        ).sort("low_stocks", -1)
+        return await cursor.to_list(length=None)
 
     async def out_of_stock_products(self, shop_id: str):
-        return await self.find_many(
+        cursor = self.breakdown.find(
             {"shop_id": shop_id, "no_stocks": {"$gt": 0}},
-            sort=[("timestamp", -1)],
-        )
+            {"_id": 0}
+        ).sort("timestamp", -1)
+        return await cursor.to_list(length=None)
 
     async def dashboard(self, shop_id: str):
         return {
@@ -378,3 +464,5 @@ class ProdInvRepo(AnalyticsBaseRepo):
 
 
 prod_inv_repo = ProdInvRepo()
+
+

@@ -128,12 +128,11 @@ class SupplierRepo(AnalyticsBaseRepo):
         )
 
     async def top_suppliers(self, shop_id: str, limit: int = 10):
-        return await self.aggregate([
-            {"$match": {"shop_id": shop_id}},
-            {"$sort": {"total_purchases": -1}},
-            {"$limit": limit},
-            {"$project": {"_id": 0}},
-        ])
+        cursor = self.breakdown.find(
+            {"shop_id": shop_id},
+            {"_id": 0}
+        ).sort("total_purchases", -1).limit(limit)
+        return await cursor.to_list(length=None)
 
     async def supplier_trend(
         self,

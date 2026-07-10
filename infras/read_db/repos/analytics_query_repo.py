@@ -111,11 +111,11 @@ class AnalyticsQueryRepo:
         if customer_id:
             result["customer"] = await customer_repo.get_customer(shop_id, customer_id)
             
-        if not product_id and not supplier_id and not customer_id:
-            result["overview"] = await self.overview(shop_id)
-            result["dashboard"] = await self.dashboard(shop_id, start_date, end_date)
-            result["trends"] = await self.trends(shop_id, start_date, end_date)
-            result["inventory"] = await self.inventory_health(shop_id)
+        result["overview"] = await self.overview(shop_id)
+        result["dashboard"] = await self.dashboard(shop_id, start_date, end_date)
+        result["trends"] = await self.trends(shop_id, start_date, end_date)
+        result["inventory"] = await self.inventory_health(shop_id)
+        result["top"] = await self.top_entities(shop_id)
             
         return result
 
