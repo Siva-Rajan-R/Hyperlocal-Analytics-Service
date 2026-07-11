@@ -16,4 +16,5 @@ class PurchaseAnalyticsDatas(BaseModel):
 
 class PurchaseAnalyticsSchema(BaseModel):
     shop_id:str
+    total_purchase:Optional[int]=1
     datas:List[PurchaseAnalyticsDatas]

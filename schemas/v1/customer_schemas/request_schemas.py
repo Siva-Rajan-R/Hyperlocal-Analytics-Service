@@ -12,4 +12,5 @@ class CustomerAnalyticsDatas(BaseModel):
 
 class CustomerAnalyticsSchema(BaseModel):
     shop_id: str
+    action: Optional[str] = "create"
     datas: List[CustomerAnalyticsDatas]

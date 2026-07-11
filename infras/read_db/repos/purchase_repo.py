@@ -22,7 +22,7 @@ class PurchaseRepo(AnalyticsBaseRepo):
 
     async def process_event(self, payload: PurchaseAnalyticsSchema):
         print(payload.model_dump())
-        total_purchase = 1
+        total_purchase = payload.total_purchase if payload.total_purchase is not None else 1
         total_amount = 0.0
         total_stock = 0.0
         total_outstanding = 0.0
@@ -43,6 +43,7 @@ class PurchaseRepo(AnalyticsBaseRepo):
                 stocks=item.stocks or 0.0,
                 amount=item.purchase_amounts or 0.0,
                 outstanding=item.outstanding_amounts or 0.0,
+                total_purchase=total_purchase,
             )
 
             from .supplier_repo import supplier_repo
@@ -50,6 +51,7 @@ class PurchaseRepo(AnalyticsBaseRepo):
                 shop_id=payload.shop_id,
                 supplier_id=item.supplier_id,
                 amount=item.purchase_amounts or 0.0,
+                total_purchase=total_purchase,
             )
 
         result = await self.overall.update_one(

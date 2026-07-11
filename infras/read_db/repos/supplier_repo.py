@@ -28,28 +28,36 @@ class SupplierRepo(AnalyticsBaseRepo):
             total_outstanding += (item.outstanding_amounts or 0) - (item.cleared_amounts or 0)
             total_cleared += item.cleared_amounts or 0
 
-            await self.breakdown.update_one(
-                {
-                    "shop_id": payload.shop_id,
-                    "supplier_id": item.supplier_id,
-                },
-                {
-                    "$inc": {
-                        "total_outstandings": (item.outstanding_amounts or 0) - (item.cleared_amounts or 0),
-                        "total_cleared_amounts": item.cleared_amounts or 0,
-                    },
-                    "$set": {
-                        "timestamp": datetime.utcnow(),
-                    },
-                    "$setOnInsert": {
+            if getattr(payload, "action", "create") == "delete":
+                await self.breakdown.delete_one(
+                    {
                         "shop_id": payload.shop_id,
                         "supplier_id": item.supplier_id,
-                        "total_purchases": 0,
-                        "total_purchase_amounts": 0.0,
+                    }
+                )
+            else:
+                await self.breakdown.update_one(
+                    {
+                        "shop_id": payload.shop_id,
+                        "supplier_id": item.supplier_id,
                     },
-                },
-                upsert=True,
-            )
+                    {
+                        "$inc": {
+                            "total_outstandings": (item.outstanding_amounts or 0) - (item.cleared_amounts or 0),
+                            "total_cleared_amounts": item.cleared_amounts or 0,
+                        },
+                        "$set": {
+                            "timestamp": datetime.utcnow(),
+                        },
+                        "$setOnInsert": {
+                            "shop_id": payload.shop_id,
+                            "supplier_id": item.supplier_id,
+                            "total_purchases": 0,
+                            "total_purchase_amounts": 0.0,
+                        },
+                    },
+                    upsert=True,
+                )
 
         supplier_count = await self.breakdown.count_documents(
             {"shop_id": payload.shop_id}
@@ -76,6 +84,7 @@ class SupplierRepo(AnalyticsBaseRepo):
         shop_id: str,
         supplier_id: str,
         amount: float,
+        total_purchase: int = 1,
     ):
         await self.breakdown.update_one(
             {
@@ -84,7 +93,7 @@ class SupplierRepo(AnalyticsBaseRepo):
             },
             {
                 "$inc": {
-                    "total_purchases": 1,
+                    "total_purchases": total_purchase,
                     "total_purchase_amounts": amount,
                 },
                 "$set": {"timestamp": datetime.utcnow()},

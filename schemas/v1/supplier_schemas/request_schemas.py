@@ -11,4 +11,5 @@ class SupplierAnalyticsDatas(BaseModel):
 
 class SupplierAnalyticsSchema(BaseModel):
     shop_id: str
+    action: Optional[str] = "create"
     datas: List[SupplierAnalyticsDatas]

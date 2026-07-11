@@ -33,30 +33,38 @@ class CustomerRepo(AnalyticsBaseRepo):
             total_outstanding += outstanding
             total_cleared += cleared
 
-            await self.breakdown.update_one(
-                {
-                    "shop_id": payload.shop_id,
-                    "customer_id": item.customer_id,
-                },
-                {
-                    "$inc": {
-                        "total_outstandings": outstanding,
-                        "total_cleared_amounts": cleared,
-                    },
-                    "$set": {
-                        "total_credit_limits": credit,
-                        "timestamp": datetime.utcnow(),
-                    },
-                    "$setOnInsert": {
+            if getattr(payload, "action", "create") == "delete":
+                await self.breakdown.delete_one(
+                    {
                         "shop_id": payload.shop_id,
                         "customer_id": item.customer_id,
-                        "total_settlements": 0,
-                        "total_sales": 0,
-                        "total_sales_amount": 0,
+                    }
+                )
+            else:
+                await self.breakdown.update_one(
+                    {
+                        "shop_id": payload.shop_id,
+                        "customer_id": item.customer_id,
                     },
-                },
-                upsert=True,
-            )
+                    {
+                        "$inc": {
+                            "total_outstandings": outstanding,
+                            "total_cleared_amounts": cleared,
+                            "total_credit_limits": credit,
+                        },
+                        "$set": {
+                            "timestamp": datetime.utcnow(),
+                        },
+                        "$setOnInsert": {
+                            "shop_id": payload.shop_id,
+                            "customer_id": item.customer_id,
+                            "total_settlements": 0,
+                            "total_sales": 0,
+                            "total_sales_amount": 0,
+                        },
+                    },
+                    upsert=True,
+                )
 
         customer_count = await self.breakdown.count_documents({"shop_id": payload.shop_id})
 

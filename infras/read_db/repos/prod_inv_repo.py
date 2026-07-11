@@ -101,6 +101,8 @@ class ProdInvRepo(AnalyticsBaseRepo):
         metric_inc_fields = {k: v for k, v in inc_fields.items() if k != "stocks"}
         if metric_inc_fields:
             update_doc["$inc"] = metric_inc_fields
+            for k in metric_inc_fields:
+                update_doc["$setOnInsert"].pop(k, None)
 
         await self.breakdown.update_one(
             query,
@@ -142,15 +144,15 @@ class ProdInvRepo(AnalyticsBaseRepo):
                 {
                     "shop_id": payload.shop_id,
                     "product_id": item.product_id,
-                    "variant_id": "",
-                    "batch_id": "",
+                    "variant_id": item.variant_id or "",
+                    "batch_id": item.batch_id or "",
                 },
                 {
                     "$set": {
                         "shop_id": payload.shop_id,
                         "product_id": item.product_id,
-                        "variant_id": "",
-                        "batch_id": "",
+                        "variant_id": item.variant_id or "",
+                        "batch_id": item.batch_id or "",
                         "is_active": item.is_active,
                         "stocks": item.stocks or 0,
                         "low_stocks": item.low_stocks or 0,
@@ -197,9 +199,10 @@ class ProdInvRepo(AnalyticsBaseRepo):
         stocks: float,
         amount: float,
         outstanding: float,
+        total_purchase: int = 1,
     ):
         purchase_inc = {
-            "total_purchases": 1,
+            "total_purchases": total_purchase,
             "total_purchase_amounts": amount,
             "total_purchase_outstanding_amounts": outstanding,
         }
