@@ -119,15 +119,14 @@ async def emit_stock_mov_adj(session: AsyncSession, data: List[dict]) -> bool:
             # Safely get current physical stocks metrics
             current_physical = float(stock_infos.get('physical_stocks', 0))
 
-            # Reverse calculate historical math metrics cleanly
+            # stock_before = physical stock BEFORE this adjustment
+            # stock_after  = physical stock AFTER this adjustment
             if update_type == "INCREMENT":
-                stock_before = current_physical - stocks_adjusted
-                if stock_before<0:
-                    stock_before=0
-                stock_after = current_physical
+                stock_before = current_physical
+                stock_after = current_physical + stocks_adjusted
             else:
-                stock_before = current_physical + stocks_adjusted
-                stock_after = current_physical
+                stock_before = current_physical
+                stock_after = max(0.0, current_physical - stocks_adjusted)
 
             stock_mov_adj_items.append({
                 'product_id': product_id,
