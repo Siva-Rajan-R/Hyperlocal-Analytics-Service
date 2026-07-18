@@ -3,6 +3,7 @@ __pycache__
 
 # Git
 .git
+.gitignore
 
 # Python
 __pycache__/

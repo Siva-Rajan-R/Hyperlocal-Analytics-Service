@@ -7,6 +7,10 @@ load_dotenv()
 class InventorySettings(BaseSettings):
     ENVIRONMENT:EnvironmentEnum
     READ_DB_URL:str
+    RABBITMQ_HOST:str
+    RABBITMQ_PORT:int
+    RABBITMQ_LOGIN:str
+    RABBITMQ_PASSWORD:str
     
     model_config={
         'case_sensitive':False,
