@@ -929,14 +929,18 @@ class ProductInventoryService:
                     ic("A duplicate combination of product, variant, and batch found in payload.")
                     return False
 
+            product_variant_key = f"{product_id}_{prod.variant_id}"
+            if product_variant_key not in product_serial_numbers:
+                product_serial_numbers[product_variant_key] = set()
+
             # Validate duplicate serial numbers inside the payload for this product
             if prod.serialno_infos:
                 for sn_info in prod.serialno_infos:
                     if sn_info.name:
-                        if sn_info.name in product_serial_numbers[product_id]:
-                            ic(f"Duplicate serial number '{sn_info.name}' for the same product found.")
+                        if sn_info.name in product_serial_numbers[product_variant_key]:
+                            ic(f"Duplicate serial number '{sn_info.name}' for the same product variant found.")
                             return False
-                        product_serial_numbers[product_id].add(sn_info.name)
+                        product_serial_numbers[product_variant_key].add(sn_info.name)
                         if sn_info.id:
                             serialno_tocheck.append(sn_info.id)
 
