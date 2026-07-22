@@ -20,18 +20,11 @@ class CustomerRepo(AnalyticsBaseRepo):
         await self.breakdown.create_index([("shop_id", 1), ("timestamp", -1)])
 
     async def process_event(self, payload: CustomerAnalyticsSchema):
-        total_credit = 0.0
-        total_outstanding = 0.0
-        total_cleared = 0.0
-
         for item in payload.datas:
-            credit = item.credit_limit or 0
-            outstanding = (item.outstanding_amounts or 0) - (item.cleared_amounts or 0)
-            cleared = item.cleared_amounts or 0
-
-            total_credit += credit
-            total_outstanding += outstanding
-            total_cleared += cleared
+            credit = float(item.credit_limit or 0)
+            outstanding = float(item.outstanding_amounts or 0)
+            cleared = float(item.cleared_amounts or 0)
+            settlements = int(getattr(item, "settlements", 0) or (1 if cleared > 0 else 0))
 
             if getattr(payload, "action", "create") == "delete":
                 await self.breakdown.delete_one(
@@ -47,46 +40,59 @@ class CustomerRepo(AnalyticsBaseRepo):
                         "customer_id": item.customer_id,
                     },
                     {
-                        "$inc": {
+                        "$set": {
+                            "shop_id": payload.shop_id,
+                            "customer_id": item.customer_id,
+                            "total_credit_limits": credit,
                             "total_outstandings": outstanding,
                             "total_cleared_amounts": cleared,
-                            "total_credit_limits": credit,
-                        },
-                        "$set": {
+                            "total_settlements": settlements,
                             "timestamp": datetime.utcnow(),
                         },
                         "$setOnInsert": {
-                            "shop_id": payload.shop_id,
-                            "customer_id": item.customer_id,
-                            "total_settlements": 0,
                             "total_sales": 0,
                             "total_sales_amount": 0,
+                            "total_offline_sales": 0,
+                            "total_offline_sales_amount": 0,
+                            "total_online_sales": 0,
+                            "total_online_sales_amount": 0,
                         },
                     },
                     upsert=True,
                 )
 
-        customer_count = await self.breakdown.count_documents({"shop_id": payload.shop_id})
-
-        await self.overall.update_one(
-            {"shop_id": payload.shop_id},
+        pipeline = [
+            {"$match": {"shop_id": payload.shop_id}},
             {
-                "$set": {
-                    "shop_id": payload.shop_id,
-                    "timestamp": datetime.utcnow(),
-                    "total_customers": customer_count,
+                "$group": {
+                    "_id": "$shop_id",
+                    "total_customers": {"$sum": 1},
+                    "total_credit_limits": {"$sum": "$total_credit_limits"},
+                    "total_outstandings": {"$sum": "$total_outstandings"},
+                    "total_cleared_amounts": {"$sum": "$total_cleared_amounts"},
+                    "total_settlements": {"$sum": "$total_settlements"},
+                }
+            }
+        ]
+        agg_res = await self.breakdown.aggregate(pipeline).to_list(1)
+        if agg_res:
+            tot = agg_res[0]
+            await self.overall.update_one(
+                {"shop_id": payload.shop_id},
+                {
+                    "$set": {
+                        "shop_id": payload.shop_id,
+                        "total_customers": tot.get("total_customers", 0),
+                        "total_credit_limits": float(tot.get("total_credit_limits", 0.0)),
+                        "total_outstandings": float(tot.get("total_outstandings", 0.0)),
+                        "total_cleared_amounts": float(tot.get("total_cleared_amounts", 0.0)),
+                        "total_settlements": int(tot.get("total_settlements", 0)),
+                        "timestamp": datetime.utcnow(),
+                    }
                 },
-                "$inc": {
-                    "total_credit_limits": total_credit,
-                    "total_outstandings": total_outstanding,
-                    "total_cleared_amounts": total_cleared,
-                },
-                "$setOnInsert": {
-                    "total_settlements": 0,
-                },
-            },
-            upsert=True,
-        )
+                upsert=True,
+            )
+        return {"status": "success"}
 
     async def apply_sale(
         self,

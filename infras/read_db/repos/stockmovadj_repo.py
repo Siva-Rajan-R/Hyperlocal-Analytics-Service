@@ -25,16 +25,39 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
         decrements = 0.0
         total = 0
 
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        def _extract_date(val) -> str:
+            if not val:
+                return datetime.utcnow().strftime("%Y-%m-%d")
+            s = str(val).strip()
+            if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+                return s[:10]
+            return datetime.utcnow().strftime("%Y-%m-%d")
+
+        daily_groups = {}
 
         for item in payload.datas:
             total += 1
             qty = item.stocks or 0
+            is_inc = (item.type or "").upper() in ("IN", "INCREMENT", "ADD", "PLUS")
 
-            if (item.type or "").upper() in ("IN", "INCREMENT", "ADD", "PLUS"):
+            if is_inc:
                 increments += qty
             else:
                 decrements += qty
+
+            d = _extract_date(getattr(item, "created_at", None))
+            if d not in daily_groups:
+                daily_groups[d] = {
+                    "total": 0,
+                    "increments": 0.0,
+                    "decrements": 0.0,
+                    "latest_created": getattr(item, "created_at", None)
+                }
+            daily_groups[d]["total"] += 1
+            if is_inc:
+                daily_groups[d]["increments"] += qty
+            else:
+                daily_groups[d]["decrements"] += qty
 
             from .prod_inv_repo import prod_inv_repo
             await prod_inv_repo.apply_stockmovadj(
@@ -64,25 +87,28 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
             upsert=True,
         )
 
-        await self.daily.update_one(
-            {
-                "shop_id": payload.shop_id,
-                "date": today,
-            },
-            {
-                "$inc": {
-                    "total_stockmovadj": total,
-                    "total_stockmovadj_increments": increments,
-                    "total_stockmovadj_decrements": decrements,
-                },
-                "$set": {
+        for d, stats in daily_groups.items():
+            ts = stats["latest_created"] if stats["latest_created"] else datetime.utcnow()
+            await self.daily.update_one(
+                {
                     "shop_id": payload.shop_id,
-                    "date": today,
-                    "timestamp": datetime.utcnow(),
+                    "date": d,
                 },
-            },
-            upsert=True,
-        )
+                {
+                    "$inc": {
+                        "total_stockmovadj": stats["total"],
+                        "total_stockmovadj_increments": stats["increments"],
+                        "total_stockmovadj_decrements": stats["decrements"],
+                    },
+                    "$set": {
+                        "shop_id": payload.shop_id,
+                        "date": d,
+                        "timestamp": ts,
+                    },
+                },
+                upsert=True,
+            )
+        return {"status": "success"}
 
     async def get_overall(self, shop_id: str):
         return await self.overall.find_one(

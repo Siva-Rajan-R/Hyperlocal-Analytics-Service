@@ -1,5 +1,5 @@
 
-from typing import Union
+from typing import Union,Any,Optional
 
 from icecream import ic
 
@@ -23,14 +23,44 @@ class MessagingQueueAnalyticsService:
 
     # ---------------- WRITE ---------------- #
 
+    async def _handle_event(self, data: Any, schema_cls, repo_func):
+        from infras.read_db.repos.sync_service import SyncService
+        if isinstance(data, dict):
+            shop_id = data.get("shop_id")
+            entity_name = str(data.get("entity_name") or "").upper()
+            entity_id = data.get("entity_id")
+
+            if "datas" in data:
+                try:
+                    parsed_data = schema_cls(**data)
+                    return await repo_func(parsed_data)
+                except Exception as e:
+                    ic(f"Schema parsing exception, falling back to sync: {e}")
+
+            if shop_id and entity_id:
+                if entity_name in ("SUPPLIER", "SUPPLIER_EVENT"):
+                    return await SyncService.sync_single_supplier(shop_id=shop_id, supplier_id=str(entity_id))
+                elif entity_name in ("CUSTOMER", "CUSTOMER_EVENT"):
+                    return await SyncService.sync_single_customer(shop_id=shop_id, customer_id=str(entity_id))
+                elif entity_name in ("PRODUCT", "PRODINV", "PRODINV_EVENT"):
+                    return await SyncService.sync_single_product(shop_id=shop_id, product_id=str(entity_id))
+                elif entity_name in ("PURCHASE", "PURCHASE_EVENT"):
+                    return await SyncService.sync_single_purchase(shop_id=shop_id, purchase_id=str(entity_id))
+                elif entity_name in ("ORDER", "SALES", "SALES_EVENT"):
+                    return await SyncService.sync_single_order(shop_id=shop_id, order_id=str(entity_id))
+                elif entity_name in ("STOCK_MOVEMENT", "STOCKMOVADJ", "STOCKMOVADJ_EVENT"):
+                    return await SyncService.sync_single_stockmovadj(shop_id=shop_id, stockmovadj_id=str(entity_id))
+
+            if shop_id:
+                return await SyncService.sync_shop_data(shop_id=shop_id)
+        else:
+            return await repo_func(data)
+
     async def supplier_event(
         self,
         data: Union[SupplierAnalyticsSchema, dict],
     ):
-        if isinstance(data, dict):
-            data = SupplierAnalyticsSchema(**data)
-
-        res = await supplier_repo.process_event(data)
+        res = await self._handle_event(data, SupplierAnalyticsSchema, supplier_repo.process_event)
         ic(res)
         return res
 
@@ -38,10 +68,7 @@ class MessagingQueueAnalyticsService:
         self,
         data: Union[CustomerAnalyticsSchema, dict],
     ):
-        if isinstance(data, dict):
-            data = CustomerAnalyticsSchema(**data)
-
-        res = await customer_repo.process_event(data)
+        res = await self._handle_event(data, CustomerAnalyticsSchema, customer_repo.process_event)
         ic(res)
         return res
 
@@ -49,10 +76,7 @@ class MessagingQueueAnalyticsService:
         self,
         data: Union[PurchaseAnalyticsSchema, dict],
     ):
-        if isinstance(data, dict):
-            data = PurchaseAnalyticsSchema(**data)
-
-        res = await purchase_repo.process_event(data)
+        res = await self._handle_event(data, PurchaseAnalyticsSchema, purchase_repo.process_event)
         ic(res)
         return res
 
@@ -60,10 +84,7 @@ class MessagingQueueAnalyticsService:
         self,
         data: Union[ProdInvAnalyticsSchema, dict],
     ):
-        if isinstance(data, dict):
-            data = ProdInvAnalyticsSchema(**data)
-
-        res = await prod_inv_repo.process_inventory_sync(data)
+        res = await self._handle_event(data, ProdInvAnalyticsSchema, prod_inv_repo.process_inventory_sync)
         ic(res)
         return res
 
@@ -71,10 +92,7 @@ class MessagingQueueAnalyticsService:
         self,
         data: Union[StockMovAdjAnalyticsSchema, dict],
     ):
-        if isinstance(data, dict):
-            data = StockMovAdjAnalyticsSchema(**data)
-
-        res = await stockmovadj_repo.process_event(data)
+        res = await self._handle_event(data, StockMovAdjAnalyticsSchema, stockmovadj_repo.process_event)
         ic(res)
         return res
 
@@ -82,10 +100,7 @@ class MessagingQueueAnalyticsService:
         self,
         data: Union[SalesAnalyticsSchema, dict],
     ):
-        if isinstance(data, dict):
-            data = SalesAnalyticsSchema(**data)
-
-        res = await sales_repo.process_event(data)
+        res = await self._handle_event(data, SalesAnalyticsSchema, sales_repo.process_event)
         ic(res)
         return res
 

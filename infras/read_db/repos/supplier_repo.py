@@ -21,12 +21,9 @@ class SupplierRepo(AnalyticsBaseRepo):
         await self.breakdown.create_index([("shop_id", 1), ("timestamp", -1)])
 
     async def process_event(self, payload: SupplierAnalyticsSchema):
-        total_outstanding = 0.0
-        total_cleared = 0.0
-
         for item in payload.datas:
-            total_outstanding += (item.outstanding_amounts or 0) - (item.cleared_amounts or 0)
-            total_cleared += item.cleared_amounts or 0
+            outstanding = float(item.outstanding_amounts or 0)
+            cleared = float(item.cleared_amounts or 0)
 
             if getattr(payload, "action", "create") == "delete":
                 await self.breakdown.delete_one(
@@ -42,16 +39,14 @@ class SupplierRepo(AnalyticsBaseRepo):
                         "supplier_id": item.supplier_id,
                     },
                     {
-                        "$inc": {
-                            "total_outstandings": (item.outstanding_amounts or 0) - (item.cleared_amounts or 0),
-                            "total_cleared_amounts": item.cleared_amounts or 0,
-                        },
                         "$set": {
+                            "shop_id": payload.shop_id,
+                            "supplier_id": item.supplier_id,
+                            "total_outstandings": outstanding,
+                            "total_cleared_amounts": cleared,
                             "timestamp": datetime.utcnow(),
                         },
                         "$setOnInsert": {
-                            "shop_id": payload.shop_id,
-                            "supplier_id": item.supplier_id,
                             "total_purchases": 0,
                             "total_purchase_amounts": 0.0,
                         },
@@ -59,25 +54,34 @@ class SupplierRepo(AnalyticsBaseRepo):
                     upsert=True,
                 )
 
-        supplier_count = await self.breakdown.count_documents(
-            {"shop_id": payload.shop_id}
-        )
-
-        await self.overall.update_one(
-            {"shop_id": payload.shop_id},
+        pipeline = [
+            {"$match": {"shop_id": payload.shop_id}},
             {
-                "$set": {
-                    "shop_id": payload.shop_id,
-                    "total_suppliers": supplier_count,
-                    "timestamp": datetime.utcnow(),
+                "$group": {
+                    "_id": "$shop_id",
+                    "total_suppliers": {"$sum": 1},
+                    "total_outstandings": {"$sum": "$total_outstandings"},
+                    "total_cleared_amounts": {"$sum": "$total_cleared_amounts"},
+                }
+            }
+        ]
+        agg_res = await self.breakdown.aggregate(pipeline).to_list(1)
+        if agg_res:
+            tot = agg_res[0]
+            await self.overall.update_one(
+                {"shop_id": payload.shop_id},
+                {
+                    "$set": {
+                        "shop_id": payload.shop_id,
+                        "total_suppliers": tot.get("total_suppliers", 0),
+                        "total_outstandings": float(tot.get("total_outstandings", 0.0)),
+                        "total_cleared_amounts": float(tot.get("total_cleared_amounts", 0.0)),
+                        "timestamp": datetime.utcnow(),
+                    }
                 },
-                "$inc": {
-                    "total_outstandings": total_outstanding,
-                    "total_cleared_amounts": total_cleared,
-                },
-            },
-            upsert=True,
-        )
+                upsert=True,
+            )
+        return {"status": "success"}
 
     async def apply_purchase(
         self,

@@ -22,17 +22,41 @@ class PurchaseRepo(AnalyticsBaseRepo):
 
     async def process_event(self, payload: PurchaseAnalyticsSchema):
         print(payload.model_dump())
-        total_purchase = payload.total_purchase if payload.total_purchase is not None else 1
         total_amount = 0.0
         total_stock = 0.0
         total_outstanding = 0.0
 
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        def _extract_date(val) -> str:
+            if not val:
+                return datetime.utcnow().strftime("%Y-%m-%d")
+            s = str(val).strip()
+            if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+                return s[:10]
+            return datetime.utcnow().strftime("%Y-%m-%d")
+
+        unique_purchases = len({item.purchase_id for item in payload.datas if item.purchase_id}) or len(payload.datas) or 1
+
+        daily_groups = {}
 
         for item in payload.datas:
             total_amount += item.purchase_amounts or 0
             total_stock += item.stocks or 0
             total_outstanding += item.outstanding_amounts or 0
+            
+            d = _extract_date(getattr(item, "created_at", None))
+            if d not in daily_groups:
+                daily_groups[d] = {
+                    "purchase_ids": set(),
+                    "total_amount": 0.0,
+                    "total_stock": 0.0,
+                    "total_outstanding": 0.0,
+                    "latest_created": getattr(item, "created_at", None)
+                }
+            if item.purchase_id:
+                daily_groups[d]["purchase_ids"].add(item.purchase_id)
+            daily_groups[d]["total_amount"] += item.purchase_amounts or 0
+            daily_groups[d]["total_stock"] += item.stocks or 0
+            daily_groups[d]["total_outstanding"] += item.outstanding_amounts or 0
             
             from .prod_inv_repo import prod_inv_repo
             await prod_inv_repo.apply_purchase(
@@ -43,7 +67,7 @@ class PurchaseRepo(AnalyticsBaseRepo):
                 stocks=item.stocks or 0.0,
                 amount=item.purchase_amounts or 0.0,
                 outstanding=item.outstanding_amounts or 0.0,
-                total_purchase=total_purchase,
+                total_purchase=1,
             )
 
             from .supplier_repo import supplier_repo
@@ -51,14 +75,14 @@ class PurchaseRepo(AnalyticsBaseRepo):
                 shop_id=payload.shop_id,
                 supplier_id=item.supplier_id,
                 amount=item.purchase_amounts or 0.0,
-                total_purchase=total_purchase,
+                total_purchase=1,
             )
 
-        result = await self.overall.update_one(
+        await self.overall.update_one(
             {"shop_id": payload.shop_id},
             {
                 "$inc": {
-                    "total_purchase": total_purchase,
+                    "total_purchase": unique_purchases,
                     "total_purchase_amounts": total_amount,
                     "total_purchase_stocks": total_stock,
                     "total_outstanding_amounts": total_outstanding,
@@ -71,30 +95,29 @@ class PurchaseRepo(AnalyticsBaseRepo):
             upsert=True,
         )
 
-        print(result.matched_count)
-        print(result.modified_count)
-        print(result.upserted_id)
-
-        await self.daily.update_one(
-            {
-                "shop_id": payload.shop_id,
-                "date": today,
-            },
-            {
-                "$inc": {
-                    "total_purchase": total_purchase,
-                    "total_purchase_amounts": total_amount,
-                    "total_purchase_stocks": total_stock,
-                    "total_outstanding_amounts": total_outstanding,
-                },
-                "$set": {
+        for d, stats in daily_groups.items():
+            cnt = len(stats["purchase_ids"]) or 1
+            ts = stats["latest_created"] if stats["latest_created"] else datetime.utcnow()
+            await self.daily.update_one(
+                {
                     "shop_id": payload.shop_id,
-                    "date": today,
-                    "timestamp": datetime.utcnow(),
+                    "date": d,
                 },
-            },
-            upsert=True,
-        )
+                {
+                    "$inc": {
+                        "total_purchase": cnt,
+                        "total_purchase_amounts": stats["total_amount"],
+                        "total_purchase_stocks": stats["total_stock"],
+                        "total_outstanding_amounts": stats["total_outstanding"],
+                    },
+                    "$set": {
+                        "shop_id": payload.shop_id,
+                        "date": d,
+                        "timestamp": ts,
+                    },
+                },
+                upsert=True,
+            )
         return {"success": True}
 
     async def get_overall(self, shop_id: str):

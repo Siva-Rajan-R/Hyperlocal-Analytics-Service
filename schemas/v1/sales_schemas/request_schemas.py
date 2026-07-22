@@ -12,6 +12,7 @@ class SalesAnalyticsDatas(BaseModel):
     stocks: Optional[float] = 0        # Quantity sold
     sales_amounts: Optional[float] = 0 # Amount of sale
     sales_type: str                   # "ONLINE" or "OFFLINE"
+    created_at: Optional[str] = None
 
 
 class SalesAnalyticsSchema(BaseModel):

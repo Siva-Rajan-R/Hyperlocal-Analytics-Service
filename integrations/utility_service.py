@@ -1,9 +1,12 @@
 import httpx
 from icecream import ic
 from typing import Dict, Any
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # BASE_URL = "http://127.0.0.1:8000/utilities"
-BASE_URL = "http://utility-service:8000/utilities"
+BASE_URL = f"{os.getenv("UTILITY_SERVICE_URL")}/utilities"
 
 async def get_shop_category(shop_id: str, category_id: str) -> Dict[str, Any]:
     if not shop_id or not category_id:

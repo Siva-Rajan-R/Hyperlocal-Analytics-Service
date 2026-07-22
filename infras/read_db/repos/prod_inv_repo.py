@@ -189,6 +189,7 @@ class ProdInvRepo(AnalyticsBaseRepo):
             },
             upsert=True,
         )
+        return {"status": "success"}
 
     async def apply_purchase(
         self,

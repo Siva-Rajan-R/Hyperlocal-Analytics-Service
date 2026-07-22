@@ -12,6 +12,7 @@ class PurchaseAnalyticsDatas(BaseModel):
     stocks:Optional[float]=0
     purchase_amounts:Optional[float]=0
     outstanding_amounts:Optional[float]=0
+    created_at:Optional[str]=None
 
 
 class PurchaseAnalyticsSchema(BaseModel):

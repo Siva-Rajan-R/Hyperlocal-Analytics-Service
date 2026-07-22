@@ -9,6 +9,7 @@ class StockMovAdjAnalyticsDatas(BaseModel):
     batch_id: Optional[str] = None
     stocks: Optional[float] = 0
     type: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 class StockMovAdjAnalyticsSchema(BaseModel):

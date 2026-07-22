@@ -53,7 +53,7 @@ app=FastAPI(
 
 
 
-from api.routers.v1 import supplier_routes,prod_inv_routes,purchase_routes,stockmovadj_routes,customer_routes,sales_routes,analytics_routes
+from api.routers.v1 import supplier_routes,prod_inv_routes,purchase_routes,stockmovadj_routes,customer_routes,sales_routes,analytics_routes,sync_routes
 
 # Routes to include
 app.include_router(prod_inv_routes.router)
@@ -63,4 +63,5 @@ app.include_router(stockmovadj_routes.router)
 app.include_router(purchase_routes.router)
 app.include_router(sales_routes.router)
 app.include_router(analytics_routes.router)
+app.include_router(sync_routes.router)
 
