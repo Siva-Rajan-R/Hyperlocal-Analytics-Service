@@ -920,14 +920,16 @@ class ProductInventoryService:
             inc_variant_id = prod.variant_id
             inc_batch_id = prod.batch_infos.id if prod.batch_infos else None
             
+            existing_entry = None
             for inside_data in validated_data[product_id]:
                 v_variant_id = inside_data.get("variant_id")
                 v_batch_infos = inside_data.get("batch_infos")
                 v_batch_id = v_batch_infos.get("id") if v_batch_infos else None
+                v_type = inside_data.get("type")
 
-                if v_variant_id == inc_variant_id and v_batch_id == inc_batch_id:
-                    ic("A duplicate combination of product, variant, and batch found in payload.")
-                    return False
+                if v_variant_id == inc_variant_id and v_batch_id == inc_batch_id and v_type == prod.type:
+                    existing_entry = inside_data
+                    break
 
             product_variant_key = f"{product_id}_{prod.variant_id}"
             if product_variant_key not in product_serial_numbers:
@@ -944,8 +946,16 @@ class ProductInventoryService:
                         if sn_info.id:
                             serialno_tocheck.append(sn_info.id)
 
-            # Append data and track uniquely required database entities
-            validated_data[product_id].append(prod.model_dump())
+            if existing_entry:
+                # Merge stocks and serial numbers
+                existing_entry["stocks"] = float(existing_entry.get("stocks") or 0.0) + float(prod.stocks or 0.0)
+                if prod.serialno_infos:
+                    existing_sns = existing_entry.setdefault("serialno_infos", [])
+                    for sn in prod.serialno_infos:
+                        existing_sns.append(sn.model_dump(mode="json") if hasattr(sn, "model_dump") else sn)
+            else:
+                # Append data and track uniquely required database entities
+                validated_data[product_id].append(prod.model_dump(mode="json"))
             
             if product_id and product_id not in product_tocheck:
                 product_tocheck.append(product_id)
@@ -1106,7 +1116,7 @@ class ProductInventoryService:
                     if not inc_serialnos:
                         ic("Serial number configurations absent.")
                         return False
-                    if len(inc_serialnos) != inc_stocks:
+                    if inc_stocks > 0 and len(inc_serialnos) != inc_stocks:
                         ic("Mismatch between physical inventory counts and serial units allocated.")
                         return False
                     
@@ -1236,6 +1246,13 @@ class ProductInventoryService:
                                     status="AVAILABLE"
                                 )
                             )
+                        validate_seriano_name.append({
+                            'shop_id': inc_shop_id,
+                            'product_id': existing_product_id,
+                            'variant_id': inc_variant_id,
+                            'batch_id': inc_batch_id,
+                            'names': serialno_names
+                        })
                     elif inc_update_type == "DECREMENT":
                         for serialno in inc_serialnos:
                             if not serialno.get("id"):
@@ -1243,14 +1260,7 @@ class ProductInventoryService:
                                 return False
                             serialno_todelete.append(serialno['id'])
 
-                if has_serialno:
-                    validate_seriano_name.append({
-                        'shop_id': inc_shop_id,
-                        'product_id': existing_product_id,
-                        'variant_id': inc_variant_id,
-                        'batch_id': inc_batch_id,
-                        'names': serialno_names
-                    })
+
 
                 stock_mov_adj_data.append({
                     'product_id': existing_product_id,

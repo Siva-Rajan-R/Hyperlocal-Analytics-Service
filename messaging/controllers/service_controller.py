@@ -140,7 +140,8 @@ async def service_main_controller(msg:AbstractIncomingMessage):
                     )
                 
 
-            await session.commit()
+            if session.in_transaction():
+                await session.commit()
 
 
             return 
@@ -164,7 +165,8 @@ async def service_main_controller(msg:AbstractIncomingMessage):
                 )
             
 
-            await session.commit()
+            if session.in_transaction():
+                await session.commit()
 
             return False
         

@@ -122,11 +122,11 @@ async def emit_stock_mov_adj(session: AsyncSession, data: List[dict]) -> bool:
             # stock_before = physical stock BEFORE this adjustment
             # stock_after  = physical stock AFTER this adjustment
             if update_type == "INCREMENT":
-                stock_before = current_physical
-                stock_after = current_physical + stocks_adjusted
+                stock_before = current_physical - stocks_adjusted
+                stock_after = current_physical
             else:
-                stock_before = current_physical
-                stock_after = max(0.0, current_physical - stocks_adjusted)
+                stock_before = current_physical + stocks_adjusted
+                stock_after = current_physical
 
             stock_mov_adj_items.append({
                 'product_id': product_id,
