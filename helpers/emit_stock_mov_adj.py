@@ -48,7 +48,7 @@ async def emit_stock_mov_adj(session: AsyncSession, data: List[dict]) -> bool:
     
     stock_mov_adj_items = []
     adj_date = datetime.now()
-    entity_name = "STOCK_ADJUSTMENT"
+    entity_name = "ADJUSTMENT"
 
     # STEP-3: Correlate payload adjustments against state profiles
     for prod_db in product_res:
@@ -71,7 +71,7 @@ async def emit_stock_mov_adj(session: AsyncSession, data: List[dict]) -> bool:
             batch_id = val.get('batch_id')
             variant_id = val.get('variant_id')
             update_type = val.get('type')
-            entity_name = val.get('entity_name', entity_name)
+            entity_name = val.get('entity_name') or val.get('type_name') or entity_name
             stocks_adjusted = float(val.get('stocks', 0))
 
             variant_name = ""
@@ -149,12 +149,28 @@ async def emit_stock_mov_adj(session: AsyncSession, data: List[dict]) -> bool:
                 'stocks': stocks_adjusted
             })
 
+    entity_id_val = None
+    if data:
+        for d in data:
+            if isinstance(d, dict):
+                entity_id_val = d.get('purchase_ui_id') or d.get('order_ui_id') or d.get('ui_id') or d.get('entity_id') or d.get('invoice_no')
+                if entity_id_val:
+                    break
+
+    desc_entity = entity_name.replace("_", " ") if entity_name else "ADJUSTMENT"
+    if entity_id_val:
+        desc_str = f"Stock adjusted via {desc_entity} ({entity_id_val})"
+    else:
+        desc_str = f"Stock adjusted via {desc_entity}"
+
+    mov_type = "PURCHASE" if entity_name == "PURCHASE_UPDATE" else entity_name
+
     # STEP-4: Package Transaction context for Saga Engine Orchestration
     stock_mov_adj_data = {
         'shop_id': shop_id,
-        'type': entity_name,
+        'type': mov_type,
         'date': adj_date.isoformat(),
-        'description': f'Stock adjusted via {entity_name}',
+        'description': desc_str,
         'items': stock_mov_adj_items
     }
 
