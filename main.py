@@ -71,6 +71,10 @@ app.include_router(sync_routes.router)
 
 
 
+
+
+
+
 # --- INJECTED LOGGING SETUP ---
 import time
 import logging
@@ -100,6 +104,9 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
     logger.error(f"{RED}❌ HTTP {exc.status_code} Error on {request.method} {request.url.path}:{RESET} {exc.detail}")
     
     if isinstance(exc.detail, dict) and "msg" in exc.detail:
+        exc.detail["status_type"] = exc.detail.get("status_type", "error")
+        exc.detail["title"] = exc.detail.get("title", "HTTP Error")
+        exc.detail["description"] = exc.detail.get("description", exc.detail.get("msg", str(exc.detail)))
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     
     return JSONResponse(
@@ -109,6 +116,8 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
                 "msg": "HTTP Error",
                 "status_code": exc.status_code,
                 "success": False,
+                "status_type": "error",
+                "title": "HTTP Error",
                 "description": str(exc.detail)
             }
         }
@@ -127,6 +136,8 @@ async def custom_validation_exception_handler(request: Request, exc: RequestVali
                 "msg": "Validation Error",
                 "status_code": 422,
                 "success": False,
+                "status_type": "error",
+                "title": "Validation Error",
                 "description": error_details
             }
         }
@@ -146,6 +157,8 @@ async def global_exception_handler(request: Request, exc: Exception):
                 "msg": "Internal Server Error",
                 "status_code": 500,
                 "success": False,
+                "status_type": "error",
+                "title": "System Error",
                 "description": error_details
             }
         }
