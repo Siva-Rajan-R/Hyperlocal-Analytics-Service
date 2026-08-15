@@ -22,6 +22,8 @@ class SalesRepo(AnalyticsBaseRepo):
     async def process_event(self, payload: SalesAnalyticsSchema):
         print(payload.model_dump())
         total_amount = 0.0
+        total_cost = 0.0
+        total_profit = 0.0
         total_stock = 0.0
         total_online_sales = 0
         total_online_sales_amount = 0.0
@@ -41,6 +43,8 @@ class SalesRepo(AnalyticsBaseRepo):
 
         for item in payload.datas:
             total_amount += item.sales_amounts or 0
+            total_cost += getattr(item, "cost_amounts", 0) or 0
+            total_profit += getattr(item, "profit_amounts", 0) or 0
             total_stock += item.stocks or 0
             
             is_online = (item.sales_type or "").upper() == "ONLINE"
@@ -56,6 +60,8 @@ class SalesRepo(AnalyticsBaseRepo):
                 daily_groups[d] = {
                     "sales_ids": set(),
                     "total_amount": 0.0,
+                    "total_cost": 0.0,
+                    "total_profit": 0.0,
                     "total_stock": 0.0,
                     "online_sales": 0,
                     "online_sales_amount": 0.0,
@@ -66,6 +72,8 @@ class SalesRepo(AnalyticsBaseRepo):
             if item.sales_id:
                 daily_groups[d]["sales_ids"].add(item.sales_id)
             daily_groups[d]["total_amount"] += item.sales_amounts or 0
+            daily_groups[d]["total_cost"] += getattr(item, "cost_amounts", 0) or 0
+            daily_groups[d]["total_profit"] += getattr(item, "profit_amounts", 0) or 0
             daily_groups[d]["total_stock"] += item.stocks or 0
             if is_online:
                 daily_groups[d]["online_sales"] += 1
@@ -102,6 +110,8 @@ class SalesRepo(AnalyticsBaseRepo):
                 "$inc": {
                     "total_sales": unique_sales,
                     "total_sales_amounts": total_amount,
+                    "total_cost": total_cost,
+                    "total_profit": total_profit,
                     "total_sales_stocks": total_stock,
                     "total_online_sales": total_online_sales,
                     "total_online_sales_amount": total_online_sales_amount,
@@ -128,6 +138,8 @@ class SalesRepo(AnalyticsBaseRepo):
                     "$inc": {
                         "total_sales": cnt,
                         "total_sales_amounts": stats["total_amount"],
+                        "total_cost": stats["total_cost"],
+                        "total_profit": stats["total_profit"],
                         "total_sales_stocks": stats["total_stock"],
                         "total_online_sales": stats["online_sales"],
                         "total_online_sales_amount": stats["online_sales_amount"],
@@ -188,6 +200,8 @@ class SalesRepo(AnalyticsBaseRepo):
                     "_id": "$date",
                     "total_sales": {"$sum": "$total_sales"},
                     "total_sales_amounts": {"$sum": "$total_sales_amounts"},
+                    "total_cost": {"$sum": "$total_cost"},
+                    "total_profit": {"$sum": "$total_profit"},
                     "total_sales_stocks": {"$sum": "$total_sales_stocks"},
                     "total_online_sales": {"$sum": "$total_online_sales"},
                     "total_online_sales_amount": {"$sum": "$total_online_sales_amount"},

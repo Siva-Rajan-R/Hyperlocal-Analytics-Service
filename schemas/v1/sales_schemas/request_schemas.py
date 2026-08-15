@@ -11,6 +11,8 @@ class SalesAnalyticsDatas(BaseModel):
     batch_id: Optional[str] = None
     stocks: Optional[float] = 0        # Quantity sold
     sales_amounts: Optional[float] = 0 # Amount of sale
+    cost_amounts: Optional[float] = 0  # Cost of goods sold
+    profit_amounts: Optional[float] = 0 # Profit from sale
     sales_type: str                   # "ONLINE" or "OFFLINE"
     created_at: Optional[str] = None
 

@@ -28,3 +28,9 @@ async def get_unified_dashboard(
         start_date=start_date,
         end_date=end_date,
     )
+
+@router.get("/resync")
+async def resync_shop(shop_id: str):
+    from infras.read_db.repos.sync_service import SyncService
+    await SyncService.sync_shop_data(shop_id)
+    return {"status": "success", "message": f"Resynced {shop_id}"}

@@ -326,17 +326,46 @@ class SyncService:
                     datas = []
                     for o in orders:
                         o_date = str(o.get("created_at") or o.get("date") or "")
-                        for item in o.get("items", []):
-                            qty = float(item.get("quantity") or item.get("stocks") or 0.0)
+                        
+                        # Precompute returns and exchanges
+                        returned_qty_map = {}
+                        for ret in o.get("returns", []):
+                            for r_item in ret.get("items", []):
+                                oi_id = r_item.get("order_item_id")
+                                returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or 0.0)
+                        
+                        exchanged_qty_map = {}
+                        for exc in o.get("exchanges", []):
+                            for e_old in exc.get("old_items", []):
+                                oi_id = e_old.get("order_item_id")
+                                exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or 0.0)
+                                
+                        all_items = list(o.get("items", []))
+                        for exc in o.get("exchanges", []):
+                            all_items.extend(exc.get("replaced_items", []))
+
+                        for item in all_items:
+                            oi_id = item.get("id") or item.get("order_item_id") or ""
+                            gross_qty = float(item.get("quantity") or item.get("stocks") or 0.0)
+                            net_qty = max(0.0, gross_qty - returned_qty_map.get(oi_id, 0.0) - exchanged_qty_map.get(oi_id, 0.0))
+                            
                             sell_price = float(item.get("sell_price") or item.get("price") or 0.0)
+                            buy_price = float(item.get("buy_price") or 0.0)
+                            
+                            sales_amounts = net_qty * sell_price
+                            cost_amounts = net_qty * buy_price
+                            profit_amounts = sales_amounts - cost_amounts
+                            
                             datas.append(SalesAnalyticsDatas(
                                 sales_id=o.get("id") or "",
                                 customer_id=o.get("customer_id"),
                                 product_id=item.get("product_id") or "",
                                 variant_id=item.get("variant_id"),
                                 batch_id=item.get("batch_id"),
-                                stocks=qty,
-                                sales_amounts=qty * sell_price,
+                                stocks=net_qty,
+                                sales_amounts=sales_amounts,
+                                cost_amounts=cost_amounts,
+                                profit_amounts=profit_amounts,
                                 sales_type=o.get("origin") or "OFFLINE",
                                 created_at=o_date
                             ))
@@ -514,20 +543,43 @@ class SyncService:
             if p:
                 p_id = p.get("id") or p.get("purchase_id") or ""
                 p_date = str(p.get("created_at") or p.get("date") or "")
+                
+                # Precompute returns per purchase item
+                returned_qty_map = {}
+                for ret in p.get("returns", []):
+                    for r_item in ret.get("items", []):
+                        # typically purchase return items reference original item
+                        pi_id = r_item.get("purchase_item_id") or r_item.get("id")
+                        if pi_id:
+                            returned_qty_map[pi_id] = returned_qty_map.get(pi_id, 0.0) + float(r_item.get("quantity") or r_item.get("return_quantity") or 0.0)
+
                 datas = []
                 for item in p.get("items", []):
+                    pi_id = item.get("id") or ""
                     stocks_info = item.get("stocks_infos") or {}
                     var_info = item.get("variant_infos") or {}
                     bat_info = item.get("batch_infos") or {}
                     supp_info = p.get("supplier") or {}
+                    
+                    gross_qty = float(stocks_info.get("stocks") or item.get("stocks") or item.get("quantity") or 0.0)
+                    ret_qty = returned_qty_map.get(pi_id, 0.0)
+                    net_qty = max(0.0, gross_qty - ret_qty)
+                    
+                    # Usually buy_price is per unit, total_amount is overall
+                    buy_price = float(item.get("buy_price") or 0.0)
+                    if not buy_price and gross_qty > 0:
+                        buy_price = float(item.get("total_amount") or 0.0) / gross_qty
+                        
+                    purchase_amounts = net_qty * buy_price
+
                     datas.append(PurchaseAnalyticsDatas(
                         purchase_id=p_id,
                         supplier_id=p.get("supplier_id") or supp_info.get("supplier_id") or "",
                         product_id=item.get("product_id") or "",
                         variant_id=var_info.get("id") or item.get("variant_id"),
                         batch_id=bat_info.get("id") or item.get("batch_id"),
-                        stocks=float(stocks_info.get("stocks") or item.get("stocks") or 0.0),
-                        purchase_amounts=float(item.get("total_amount") or item.get("buy_price") or 0.0),
+                        stocks=net_qty,
+                        purchase_amounts=purchase_amounts,
                         outstanding_amounts=float(p.get("outstanding_amount") or 0.0),
                         created_at=p_date
                     ))
@@ -552,21 +604,75 @@ class SyncService:
                     o = next((item for item in orders if item.get("id") == order_id), None)
             if o:
                 o_date = str(o.get("created_at") or o.get("date") or "")
+                
+                # Precompute returns per order_item_id
+                returned_qty_map = {}
+                for ret in o.get("returns", []):
+                    for r_item in ret.get("items", []):
+                        oi_id = r_item.get("order_item_id")
+                        returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or 0.0)
+                
+                # Precompute exchanges per order_item_id
+                exchanged_qty_map = {}
+                for exc in o.get("exchanges", []):
+                    for e_old in exc.get("old_items", []):
+                        oi_id = e_old.get("order_item_id")
+                        exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or 0.0)
+
                 datas = []
                 for item in o.get("items", []):
-                    qty = float(item.get("quantity") or item.get("stocks") or 0.0)
+                    oi_id = item.get("id") or item.get("order_item_id") or ""
+                    gross_qty = float(item.get("quantity") or item.get("stocks") or 0.0)
+                    ret_qty = returned_qty_map.get(oi_id, 0.0)
+                    exc_qty = exchanged_qty_map.get(oi_id, 0.0)
+                    net_qty = max(0.0, gross_qty - ret_qty - exc_qty)
+                    
                     sell_price = float(item.get("sell_price") or item.get("price") or 0.0)
+                    buy_price = float(item.get("buy_price") or 0.0)
+                    
+                    sales_amounts = net_qty * sell_price
+                    cost_amounts = net_qty * buy_price
+                    profit_amounts = sales_amounts - cost_amounts
+
                     datas.append(SalesAnalyticsDatas(
                         sales_id=o.get("id") or "",
                         customer_id=o.get("customer_id"),
                         product_id=item.get("product_id") or "",
                         variant_id=item.get("variant_id"),
                         batch_id=item.get("batch_id"),
-                        stocks=qty,
-                        sales_amounts=qty * sell_price,
+                        stocks=net_qty,
+                        sales_amounts=sales_amounts,
+                        cost_amounts=cost_amounts,
+                        profit_amounts=profit_amounts,
                         sales_type=o.get("origin") or "OFFLINE",
                         created_at=o_date
                     ))
+                
+                # Also process new items from exchanges as new sales
+                for exc in o.get("exchanges", []):
+                    for e_new in exc.get("new_items", []):
+                        gross_qty = float(e_new.get("quantity") or e_new.get("stocks") or 0.0)
+                        sell_price = float(e_new.get("sell_price") or e_new.get("price") or 0.0)
+                        buy_price = float(e_new.get("buy_price") or 0.0)
+                        
+                        sales_amounts = gross_qty * sell_price
+                        cost_amounts = gross_qty * buy_price
+                        profit_amounts = sales_amounts - cost_amounts
+
+                        datas.append(SalesAnalyticsDatas(
+                            sales_id=o.get("id") or "",
+                            customer_id=o.get("customer_id"),
+                            product_id=e_new.get("product_id") or "",
+                            variant_id=e_new.get("variant_id"),
+                            batch_id=e_new.get("batch_id"),
+                            stocks=gross_qty,
+                            sales_amounts=sales_amounts,
+                            cost_amounts=cost_amounts,
+                            profit_amounts=profit_amounts,
+                            sales_type=o.get("origin") or "OFFLINE",
+                            created_at=o_date
+                        ))
+
                 if datas:
                     payload = SalesAnalyticsSchema(shop_id=shop_id, datas=datas)
                     res = await sales_repo.process_event(payload)
