@@ -37,7 +37,7 @@ class AnalyticsQueryRepo:
             "sales": await sales_repo.get_overall(shop_id),
         }
 
-    async def top_entities(self, shop_id: str, limit: int = 10):
+    async def top_entities(self, shop_id: str, limit: int = 3):
         return {
             "top_suppliers": await supplier_repo.top_suppliers(shop_id, limit),
             "top_customers": await customer_repo.top_customers(shop_id, limit),
@@ -115,7 +115,7 @@ class AnalyticsQueryRepo:
         result["dashboard"] = await self.dashboard(shop_id, start_date, end_date)
         result["trends"] = await self.trends(shop_id, start_date, end_date)
         result["inventory"] = await self.inventory_health(shop_id)
-        result["top"] = await self.top_entities(shop_id)
+        result["top"] = await self.top_entities(shop_id, 3)
             
         return result
 

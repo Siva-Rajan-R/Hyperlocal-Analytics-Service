@@ -265,6 +265,7 @@ class ProductRepo:
                     *self.inventory_rop_cols
                 ),
             )
+            .order_by(Products.created_at.desc())
             .limit(data.limit)
             .offset(cursor)
         )
@@ -570,6 +571,7 @@ class ProductRepo:
 
                 selectinload(Products.reorder_points).load_only(*self.inventory_rop_cols),
             )
+            .order_by(Products.created_at.desc())
             .limit(data.limit)
             .offset(cursor)
         )

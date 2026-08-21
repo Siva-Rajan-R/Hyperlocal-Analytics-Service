@@ -140,7 +140,7 @@ class PurchaseRepo(AnalyticsBaseRepo):
 
         return await self.find_many(
             filters=filters,
-            sort=[("timestamp", 1)],
+            sort=[("timestamp", -1)],
         )
 
     async def purchase_trend(

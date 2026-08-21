@@ -181,7 +181,7 @@ class SupplierRepo(AnalyticsBaseRepo):
 
     async def dashboard(self, shop_id: str):
         overall = await self.get_overall(shop_id)
-        top = await self.top_suppliers(shop_id, 5)
+        top = await self.top_suppliers(shop_id, 3)
         trend = await self.supplier_trend(shop_id)
 
         return {

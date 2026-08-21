@@ -133,7 +133,7 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
 
         return await self.find_many(
             filters=filters,
-            sort=[("timestamp", 1)],
+            sort=[("timestamp", -1)],
         )
 
     async def trend(

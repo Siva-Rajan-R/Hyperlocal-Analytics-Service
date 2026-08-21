@@ -457,7 +457,7 @@ class ProdInvRepo(AnalyticsBaseRepo):
     async def dashboard(self, shop_id: str):
         return {
             "overall": await self.get_overall(shop_id),
-            "top_products": await self.top_products(shop_id, 5),
+            "top_products": await self.top_products(shop_id, 3),
             "low_stock": await self.low_stock_products(shop_id),
             "out_of_stock": await self.out_of_stock_products(shop_id),
         }

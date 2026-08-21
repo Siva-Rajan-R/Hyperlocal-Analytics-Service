@@ -42,18 +42,24 @@ class SalesRepo(AnalyticsBaseRepo):
         daily_groups = {}
 
         for item in payload.datas:
-            total_amount += item.sales_amounts or 0
-            total_cost += getattr(item, "cost_amounts", 0) or 0
-            total_profit += getattr(item, "profit_amounts", 0) or 0
+            item_sales_amt = item.sales_amounts or 0.0
+            item_cost_amt = getattr(item, "cost_amounts", 0.0) or 0.0
+            item_profit_amt = getattr(item, "profit_amounts", 0.0) or 0.0
+            if item_profit_amt == 0.0:
+                item_profit_amt = item_sales_amt - item_cost_amt
+
+            total_amount += item_sales_amt
+            total_cost += item_cost_amt
+            total_profit += item_profit_amt
             total_stock += item.stocks or 0
             
             is_online = (item.sales_type or "").upper() == "ONLINE"
             if is_online:
                 total_online_sales += 1
-                total_online_sales_amount += item.sales_amounts or 0
+                total_online_sales_amount += item_sales_amt
             else:
                 total_offline_sales += 1
-                total_offline_sales_amount += item.sales_amounts or 0
+                total_offline_sales_amount += item_sales_amt
             
             d = _extract_date(getattr(item, "created_at", None))
             if d not in daily_groups:
@@ -71,16 +77,16 @@ class SalesRepo(AnalyticsBaseRepo):
                 }
             if item.sales_id:
                 daily_groups[d]["sales_ids"].add(item.sales_id)
-            daily_groups[d]["total_amount"] += item.sales_amounts or 0
-            daily_groups[d]["total_cost"] += getattr(item, "cost_amounts", 0) or 0
-            daily_groups[d]["total_profit"] += getattr(item, "profit_amounts", 0) or 0
+            daily_groups[d]["total_amount"] += item_sales_amt
+            daily_groups[d]["total_cost"] += item_cost_amt
+            daily_groups[d]["total_profit"] += item_profit_amt
             daily_groups[d]["total_stock"] += item.stocks or 0
             if is_online:
                 daily_groups[d]["online_sales"] += 1
-                daily_groups[d]["online_sales_amount"] += item.sales_amounts or 0
+                daily_groups[d]["online_sales_amount"] += item_sales_amt
             else:
                 daily_groups[d]["offline_sales"] += 1
-                daily_groups[d]["offline_sales_amount"] += item.sales_amounts or 0
+                daily_groups[d]["offline_sales_amount"] += item_sales_amt
 
             # Update product inventory analytics
             from .prod_inv_repo import prod_inv_repo
@@ -176,7 +182,7 @@ class SalesRepo(AnalyticsBaseRepo):
 
         return await self.find_many(
             filters=filters,
-            sort=[("timestamp", 1)],
+            sort=[("timestamp", -1)],
         )
 
     async def sales_trend(

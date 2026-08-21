@@ -209,7 +209,7 @@ class CustomerRepo(AnalyticsBaseRepo):
     async def dashboard(self, shop_id: str):
         return {
             "overall": await self.get_overall(shop_id),
-            "top_customers": await self.top_customers(shop_id, 5),
+            "top_customers": await self.top_customers(shop_id, 3),
             "trend": await self.customer_trend(shop_id),
         }
 
