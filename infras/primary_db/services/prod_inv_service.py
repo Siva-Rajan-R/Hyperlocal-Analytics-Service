@@ -1,3 +1,4 @@
+from core.utils.user_context import get_activity_log_user_info
 from models.repo_models.base_repo_model import BaseRepoModel
 from models.service_models.base_service_model import BaseServiceModel
 from ..models.inventory_model import InventoryPricings,InventoryStocks,InventoryStoragelocations,InventoryReorderPoint
@@ -196,7 +197,7 @@ class ProductInventoryService:
                     exchange_name="activity_logs.exchange",
                     payload={
                         "shop_id": data.shop_id,
-                        "user_name": "siva",
+                        **get_activity_log_user_info(),
                         "service": "Inventory",
                         "action": "CREATE",
                         "entity_type": "Product",
@@ -495,7 +496,7 @@ class ProductInventoryService:
                         exchange_name="activity_logs.exchange",
                         payload={
                             "shop_id": data.shop_id,
-                            "user_name": "siva",
+                            **get_activity_log_user_info(),
                             "service": "Inventory",
                             "action": "UPDATE",
                             "entity_type": "ProductInventory",
@@ -595,7 +596,7 @@ class ProductInventoryService:
                     exchange_name="activity_logs.exchange",
                     payload={
                         "shop_id": data.shop_id,
-                        "user_name": "siva",
+                        **get_activity_log_user_info(),
                         "service": "Inventory",
                         "action": "DELETE",
                         "entity_type": "ProductInventory",
@@ -827,7 +828,7 @@ class ProductInventoryService:
                     exchange_name="activity_logs.exchange",
                     payload={
                         "shop_id": shop_id,
-                        "user_name": "siva",
+                        **get_activity_log_user_info(),
                         "service": "Inventory",
                         "action": "UPDATE",
                         "entity_type": "InventoryBulk",
