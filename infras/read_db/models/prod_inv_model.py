@@ -10,6 +10,7 @@ class ProdInvOverallAnalytics(BaseModel):
     total_stocks:float
     total_low_stocks:float
     total_no_stocks:float
+    total_non_tracking_products:int = 0
 
 
 class ProdInvBreakDownAnalytics(BaseModel):

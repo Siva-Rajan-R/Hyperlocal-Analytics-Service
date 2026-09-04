@@ -1,7 +1,11 @@
 import os
 import httpx
-from icecream import ic
 from typing import List, Dict, Any
+
+def ic(*args):
+    if args:
+        print("[ANALYTICS_SYNC]", *args)
+    return args[0] if len(args) == 1 else args
 
 from infras.read_db.repos.supplier_repo import supplier_repo
 from infras.read_db.repos.customer_repo import customer_repo
@@ -17,12 +21,12 @@ from schemas.v1.purchase_schemas.request_schemas import PurchaseAnalyticsSchema,
 from schemas.v1.sales_schemas.request_schemas import SalesAnalyticsSchema, SalesAnalyticsDatas
 from schemas.v1.stockmovadj_schemas.request_schemas import StockMovAdjAnalyticsSchema, StockMovAdjAnalyticsDatas
 
-SUPPLIER_SERVICE_URL = os.getenv("SUPPLIER_SERVICE_URL", "http://localhost:8002")
-CUSTOMER_SERVICE_URL = os.getenv("CUSTOMER_SERVICE_URL", "http://localhost:8006")
-INVENTORY_SERVICE_URL = os.getenv("INVENTORY_SERVICE_URL", "http://localhost:8004")
-PURCHASE_SERVICE_URL = os.getenv("PURCHASE_SERVICE_URL", "http://localhost:8003")
-ORDER_SERVICE_URL = os.getenv("ORDER_SERVICE_URL", "http://localhost:8007")
-STOCKMOVADJ_SERVICE_URL = os.getenv("STOCKMOVADJ_SERVICE_URL", "http://localhost:8005")
+SUPPLIER_SERVICE_URL = os.getenv("SUPPLIER_SERVICE_URL", "http://127.0.0.1:8002")
+CUSTOMER_SERVICE_URL = os.getenv("CUSTOMER_SERVICE_URL", "http://127.0.0.1:8006")
+INVENTORY_SERVICE_URL = os.getenv("INVENTORY_SERVICE_URL", "http://127.0.0.1:8004")
+PURCHASE_SERVICE_URL = os.getenv("PURCHASE_SERVICE_URL", "http://127.0.0.1:8003")
+ORDER_SERVICE_URL = os.getenv("ORDER_SERVICE_URL", "http://127.0.0.1:8007")
+STOCKMOVADJ_SERVICE_URL = os.getenv("STOCKMOVADJ_SERVICE_URL", "http://127.0.0.1:8005")
 
 async def _fetch_all_pages(client: httpx.AsyncClient, base_url: str) -> tuple[list, int]:
     all_items = []
@@ -82,25 +86,75 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
         return items
 
     prod_id = p["id"]
-    is_active = bool(p.get("is_active", True))
+    have_tracking = bool(p.get("have_tracking", True))
     created_at = str(p.get("created_at") or "")
+
+    # Non-tracking products are separated from stock/active metrics
+    if not have_tracking:
+        items.append(ProdInvAnalyticsDatas(
+            product_id=prod_id,
+            variant_id=None,
+            batch_id=None,
+            is_active=False,
+            have_tracking=False,
+            stocks=0.0,
+            low_stocks=0.0,
+            no_stocks=0.0,
+            created_at=created_at
+        ))
+        return items
+
+    # If inventory_units structure is present
+    inventory_units = p.get("inventory_units")
+    if isinstance(inventory_units, list) and len(inventory_units) > 0:
+        for unit in inventory_units:
+            if not isinstance(unit, dict):
+                continue
+            v_info = unit.get("variant_infos") or {}
+            b_info = unit.get("batch_infos") or {}
+            s_info = unit.get("stock_infos") or {}
+            r_info = unit.get("reorder_point_infos") or {}
+
+            stocks = float(s_info.get("available_stocks") or s_info.get("available_Stocks") or s_info.get("physical_stocks") or 0.0)
+            rop = float(r_info.get("reorder_point") or 0.0)
+            is_active = stocks > 0
+            low_stocks = 1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0
+            no_stocks = 1.0 if stocks <= 0.0 else 0.0
+
+            items.append(ProdInvAnalyticsDatas(
+                product_id=prod_id,
+                variant_id=v_info.get("id") if isinstance(v_info, dict) else None,
+                batch_id=b_info.get("id") if isinstance(b_info, dict) else None,
+                is_active=is_active,
+                have_tracking=True,
+                stocks=stocks,
+                low_stocks=low_stocks,
+                no_stocks=no_stocks,
+                created_at=created_at
+            ))
+        if items:
+            return items
+
+    # Fallback to type_infos structure
     type_infos = p.get("type_infos") or {}
-    has_batch = bool(type_infos.get("has_batch"))
-    has_variant = bool(type_infos.get("has_variant"))
+    has_batch = bool(type_infos.get("has_batch") or type_infos.get("have_batch"))
+    has_variant = bool(type_infos.get("has_variant") or type_infos.get("have_variant"))
 
     if not has_variant:
         if not has_batch:
             stock_info = p.get("stock_infos") or {}
             rop_info = p.get("reorder_point_infos") or {}
-            stocks = float(stock_info.get("available_stocks") or stock_info.get("physical_stocks") or 0.0)
+            stocks = float(stock_info.get("available_stocks") or stock_info.get("available_Stocks") or stock_info.get("physical_stocks") or 0.0)
             rop = float(rop_info.get("reorder_point") or 0.0)
+            is_active = stocks > 0
             items.append(ProdInvAnalyticsDatas(
                 product_id=prod_id,
                 variant_id=None,
                 batch_id=None,
                 is_active=is_active,
+                have_tracking=True,
                 stocks=stocks,
-                low_stocks=1.0 if stocks <= rop else 0.0,
+                low_stocks=1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
                 no_stocks=1.0 if stocks <= 0.0 else 0.0,
                 created_at=created_at
             ))
@@ -110,15 +164,17 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
                 if isinstance(b, dict) and b.get("id"):
                     b_stock = b.get("stock_infos") or {}
                     b_rop = b.get("reorder_point_infos") or {}
-                    stocks = float(b_stock.get("available_stocks") or b_stock.get("physical_stocks") or 0.0)
+                    stocks = float(b_stock.get("available_stocks") or b_stock.get("available_Stocks") or b_stock.get("physical_stocks") or 0.0)
                     rop = float(b_rop.get("reorder_point") or 0.0)
+                    is_active = stocks > 0
                     items.append(ProdInvAnalyticsDatas(
                         product_id=prod_id,
                         variant_id=None,
                         batch_id=b["id"],
                         is_active=is_active,
+                        have_tracking=True,
                         stocks=stocks,
-                        low_stocks=1.0 if stocks <= rop else 0.0,
+                        low_stocks=1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
                         no_stocks=1.0 if stocks <= 0.0 else 0.0,
                         created_at=created_at
                     ))
@@ -132,15 +188,17 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
             if not has_batch:
                 v_stock = v.get("stock_infos") or {}
                 v_rop = v.get("reorder_point_infos") or {}
-                stocks = float(v_stock.get("available_stocks") or v_stock.get("physical_stocks") or 0.0)
+                stocks = float(v_stock.get("available_stocks") or v_stock.get("available_Stocks") or v_stock.get("physical_stocks") or 0.0)
                 rop = float(v_rop.get("reorder_point") or 0.0)
+                is_active = stocks > 0
                 items.append(ProdInvAnalyticsDatas(
                     product_id=prod_id,
                     variant_id=v_id,
                     batch_id=None,
                     is_active=is_active,
+                    have_tracking=True,
                     stocks=stocks,
-                    low_stocks=1.0 if stocks <= rop else 0.0,
+                    low_stocks=1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
                     no_stocks=1.0 if stocks <= 0.0 else 0.0,
                     created_at=created_at
                 ))
@@ -150,18 +208,39 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
                     if isinstance(b, dict) and b.get("id"):
                         b_stock = b.get("stock_infos") or {}
                         b_rop = b.get("reorder_point_infos") or {}
-                        stocks = float(b_stock.get("available_stocks") or b_stock.get("physical_stocks") or 0.0)
+                        stocks = float(b_stock.get("available_stocks") or b_stock.get("available_Stocks") or b_stock.get("physical_stocks") or 0.0)
                         rop = float(b_rop.get("reorder_point") or 0.0)
+                        is_active = stocks > 0
                         items.append(ProdInvAnalyticsDatas(
                             product_id=prod_id,
                             variant_id=v_id,
                             batch_id=b["id"],
                             is_active=is_active,
+                            have_tracking=True,
                             stocks=stocks,
-                            low_stocks=1.0 if stocks <= rop else 0.0,
+                            low_stocks=1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
                             no_stocks=1.0 if stocks <= 0.0 else 0.0,
                             created_at=created_at
                         ))
+
+    if not items:
+        stock_info = p.get("stock_infos") or {}
+        rop_info = p.get("reorder_point_infos") or {}
+        stocks = float(stock_info.get("available_stocks") or stock_info.get("available_Stocks") or stock_info.get("physical_stocks") or 0.0)
+        rop = float(rop_info.get("reorder_point") or 0.0)
+        is_active = stocks > 0
+        items.append(ProdInvAnalyticsDatas(
+            product_id=prod_id,
+            variant_id=None,
+            batch_id=None,
+            is_active=is_active,
+            have_tracking=have_tracking,
+            stocks=stocks if have_tracking else 0.0,
+            low_stocks=(1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0) if have_tracking else 0.0,
+            no_stocks=(1.0 if stocks <= 0.0 else 0.0) if have_tracking else 0.0,
+            created_at=created_at
+        ))
+
     return items
 
 class SyncService:
@@ -261,10 +340,8 @@ class SyncService:
 
         # 4. Fetch and sync Product/Inventory
         try:
-            async with httpx.AsyncClient() as client:
-                products, status_code = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/inventories/by/shop/{shop_id}")
-                if status_code != 200:
-                    products, status_code = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/inventories/by/shop/{shop_id}")
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                products, status_code = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/by/shop/{shop_id}")
                 
                 if status_code == 200:
                     datas = []
@@ -290,11 +367,47 @@ class SyncService:
                     for p in purchases:
                         p_id = p.get("id") or p.get("purchase_id") or ""
                         p_date = str(p.get("created_at") or p.get("date") or "")
-                        for item in p.get("items", []):
+                        p_outst = float(p.get("outstanding_amount") or 0.0)
+                        items = p.get("items", [])
+                        
+                        gst_infos = p.get("gst_infos") or {}
+                        calc_infos = p.get("calculations") or p.get("calculation_infos") or {}
+                        gst_type = str(gst_infos.get("type") or calc_infos.get("gst_type") or "EXCLUSIVE").upper()
+                        
+                        returned_qty_map = {}
+                        for ret in p.get("returns", []):
+                            for r_item in ret.get("items", []):
+                                pi_id = r_item.get("purchase_item_id") or r_item.get("id")
+                                if pi_id:
+                                    returned_qty_map[pi_id] = returned_qty_map.get(pi_id, 0.0) + float(r_item.get("quantity") or r_item.get("return_quantity") or 0.0)
+
+                        for idx, item in enumerate(items):
+                            item_id = item.get("id") or ""
                             stocks_info = item.get("stocks_infos") or {}
                             var_info = item.get("variant_infos") or {}
                             bat_info = item.get("batch_infos") or {}
                             supp_info = p.get("supplier") or {}
+                            
+                            gross_qty = float(stocks_info.get("stocks") or item.get("stocks") or 0.0)
+                            ret_qty = returned_qty_map.get(item_id, 0.0) or float(item.get("returned_quantity") or 0.0)
+                            net_qty = max(0.0, gross_qty - ret_qty)
+
+                            buy_price = float(item.get("buy_price") or 0.0)
+                            if not buy_price and gross_qty > 0:
+                                buy_price = float(item.get("total_amount") or 0.0) / gross_qty
+                                
+                            item_subtotal = net_qty * buy_price
+                            item_gst_amt = 0.0
+                            item_gst = item.get("gst") or "0%"
+                            if item_gst and str(item_gst).endswith('%') and gst_type == "EXCLUSIVE":
+                                try:
+                                    gst_rate = float(str(item_gst)[:-1]) / 100.0
+                                    item_gst_amt = gst_rate * item_subtotal
+                                except ValueError:
+                                    pass
+                                    
+                            item_total_amount = item_subtotal + item_gst_amt
+                            item_outst = p_outst if idx == 0 else 0.0
                             
                             datas.append(PurchaseAnalyticsDatas(
                                 purchase_id=p_id,
@@ -302,9 +415,9 @@ class SyncService:
                                 product_id=item.get("product_id") or "",
                                 variant_id=var_info.get("id") or item.get("variant_id"),
                                 batch_id=bat_info.get("id") or item.get("batch_id"),
-                                stocks=float(stocks_info.get("stocks") or item.get("stocks") or 0.0),
-                                purchase_amounts=float(item.get("total_amount") or item.get("buy_price") or 0.0),
-                                outstanding_amounts=float(p.get("outstanding_amount") or 0.0),
+                                stocks=net_qty,
+                                purchase_amounts=item_total_amount,
+                                outstanding_amounts=item_outst,
                                 created_at=p_date
                             ))
                     if datas:
@@ -510,20 +623,19 @@ class SyncService:
     @staticmethod
     async def sync_single_product(shop_id: str, product_id: str):
         ic(f"Syncing single product: {product_id} for shop: {shop_id}")
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{INVENTORY_SERVICE_URL}/inventories/inventories/by/id/{shop_id}/{product_id}")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{INVENTORY_SERVICE_URL}/inventories/by/id/{shop_id}/{product_id}")
             p = None
             if resp.status_code == 200:
                 r_data = resp.json()
                 p = r_data.get("data") if isinstance(r_data, dict) and "data" in r_data else r_data
             if not p or not isinstance(p, dict):
-                products, _ = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/inventories/by/shop/{shop_id}")
+                products, _ = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/by/shop/{shop_id}")
                 p = next((item for item in products if item.get("id") == product_id), None)
             if p:
                 datas = _extract_product_analytics_items(p)
                 if datas:
-                    payload = ProdInvAnalyticsSchema(shop_id=shop_id, datas=datas)
-                    res = await prod_inv_repo.process_inventory_sync(payload)
+                    res = await prod_inv_repo.process_single_product_sync(shop_id=shop_id, datas=datas)
                     return res or {"status": "success"}
             return {"status": "processed"}
 
@@ -553,8 +665,14 @@ class SyncService:
                         if pi_id:
                             returned_qty_map[pi_id] = returned_qty_map.get(pi_id, 0.0) + float(r_item.get("quantity") or r_item.get("return_quantity") or 0.0)
 
+                p_outst = float(p.get("outstanding_amount") or 0.0)
+                gst_infos = p.get("gst_infos") or {}
+                calc_infos = p.get("calculations") or p.get("calculation_infos") or {}
+                gst_type = str(gst_infos.get("type") or calc_infos.get("gst_type") or "EXCLUSIVE").upper()
+
                 datas = []
-                for item in p.get("items", []):
+                items = p.get("items", [])
+                for idx, item in enumerate(items):
                     pi_id = item.get("id") or ""
                     stocks_info = item.get("stocks_infos") or {}
                     var_info = item.get("variant_infos") or {}
@@ -570,7 +688,18 @@ class SyncService:
                     if not buy_price and gross_qty > 0:
                         buy_price = float(item.get("total_amount") or 0.0) / gross_qty
                         
-                    purchase_amounts = net_qty * buy_price
+                    item_subtotal = net_qty * buy_price
+                    item_gst_amt = 0.0
+                    item_gst = item.get("gst") or "0%"
+                    if item_gst and str(item_gst).endswith('%') and gst_type == "EXCLUSIVE":
+                        try:
+                            gst_rate = float(str(item_gst)[:-1]) / 100.0
+                            item_gst_amt = gst_rate * item_subtotal
+                        except ValueError:
+                            pass
+                            
+                    item_total_amount = item_subtotal + item_gst_amt
+                    item_outst = p_outst if idx == 0 else 0.0
 
                     datas.append(PurchaseAnalyticsDatas(
                         purchase_id=p_id,
@@ -579,8 +708,8 @@ class SyncService:
                         variant_id=var_info.get("id") or item.get("variant_id"),
                         batch_id=bat_info.get("id") or item.get("batch_id"),
                         stocks=net_qty,
-                        purchase_amounts=purchase_amounts,
-                        outstanding_amounts=float(p.get("outstanding_amount") or 0.0),
+                        purchase_amounts=item_total_amount,
+                        outstanding_amounts=item_outst,
                         created_at=p_date
                     ))
                 if datas:
@@ -676,6 +805,18 @@ class SyncService:
                 if datas:
                     payload = SalesAnalyticsSchema(shop_id=shop_id, datas=datas)
                     res = await sales_repo.process_event(payload)
+                    
+                    # Real-time update: Sync affected products to update their current stock in analytics
+                    affected_prod_ids = set()
+                    for d in datas:
+                        if getattr(d, "product_id", None):
+                            affected_prod_ids.add(d.product_id)
+                    for pid in affected_prod_ids:
+                        try:
+                            await SyncService.sync_single_product(shop_id=shop_id, product_id=pid)
+                        except Exception as e:
+                            ic(f"Failed to sync product {pid} on order sync: {e}")
+
                     return res or {"status": "success"}
             return {"status": "processed"}
 

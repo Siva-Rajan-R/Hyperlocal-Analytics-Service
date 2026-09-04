@@ -38,6 +38,10 @@ class MessagingQueueAnalyticsService:
                     ic(f"Schema parsing exception, falling back to sync: {e}")
 
             if shop_id and entity_id:
+                action = str(data.get("action") or "").upper()
+                if action == "DELETE" and entity_name in ("PRODUCT", "PRODINV", "PRODINV_EVENT"):
+                    return await prod_inv_repo.delete_product(shop_id=shop_id, product_id=str(entity_id))
+
                 if entity_name in ("SUPPLIER", "SUPPLIER_EVENT"):
                     return await SyncService.sync_single_supplier(shop_id=shop_id, supplier_id=str(entity_id))
                 elif entity_name in ("CUSTOMER", "CUSTOMER_EVENT"):
