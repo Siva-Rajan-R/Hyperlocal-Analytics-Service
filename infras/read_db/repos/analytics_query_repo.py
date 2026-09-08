@@ -1,4 +1,5 @@
 
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -18,30 +19,69 @@ class AnalyticsQueryRepo:
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ):
+        (
+            supplier,
+            customer,
+            purchase,
+            inventory,
+            stock_adj,
+            sales,
+        ) = await asyncio.gather(
+            supplier_repo.dashboard(shop_id),
+            customer_repo.dashboard(shop_id),
+            purchase_repo.dashboard(shop_id),
+            prod_inv_repo.dashboard(shop_id),
+            stockmovadj_repo.dashboard(shop_id),
+            sales_repo.dashboard(shop_id),
+        )
         return {
-            "supplier": await supplier_repo.dashboard(shop_id),
-            "customer": await customer_repo.dashboard(shop_id),
-            "purchase": await purchase_repo.dashboard(shop_id),
-            "inventory": await prod_inv_repo.dashboard(shop_id),
-            "stock_adjustment": await stockmovadj_repo.dashboard(shop_id),
-            "sales": await sales_repo.dashboard(shop_id),
+            "supplier": supplier,
+            "customer": customer,
+            "purchase": purchase,
+            "inventory": inventory,
+            "stock_adjustment": stock_adj,
+            "sales": sales,
         }
 
     async def overview(self, shop_id: str):
+        (
+            supplier,
+            customer,
+            purchase,
+            inventory,
+            stock_adj,
+            sales,
+        ) = await asyncio.gather(
+            supplier_repo.get_overall(shop_id),
+            customer_repo.get_overall(shop_id),
+            purchase_repo.get_overall(shop_id),
+            prod_inv_repo.get_overall(shop_id),
+            stockmovadj_repo.get_overall(shop_id),
+            sales_repo.get_overall(shop_id),
+        )
         return {
-            "supplier": await supplier_repo.get_overall(shop_id),
-            "customer": await customer_repo.get_overall(shop_id),
-            "purchase": await purchase_repo.get_overall(shop_id),
-            "inventory": await prod_inv_repo.get_overall(shop_id),
-            "stock_adjustment": await stockmovadj_repo.get_overall(shop_id),
-            "sales": await sales_repo.get_overall(shop_id),
+            "supplier": supplier,
+            "customer": customer,
+            "purchase": purchase,
+            "inventory": inventory,
+            "stock_adjustment": stock_adj,
+            "sales": sales,
         }
 
     async def top_entities(self, shop_id: str, limit: int = 3):
+        (
+            top_suppliers,
+            top_customers,
+            top_products,
+        ) = await asyncio.gather(
+            supplier_repo.top_suppliers(shop_id, limit),
+            customer_repo.top_customers(shop_id, limit),
+            prod_inv_repo.top_products(shop_id, limit),
+        )
         return {
-            "top_suppliers": await supplier_repo.top_suppliers(shop_id, limit),
-            "top_customers": await customer_repo.top_customers(shop_id, limit),
-            "top_products": await prod_inv_repo.top_products(shop_id, limit),
+            "top_suppliers": top_suppliers,
+            "top_customers": top_customers,
+            "top_products": top_products,
         }
 
     async def trends(
@@ -50,29 +90,41 @@ class AnalyticsQueryRepo:
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ):
+        (
+            suppliers,
+            customers,
+            purchases,
+            stock_adjustments,
+            sales,
+        ) = await asyncio.gather(
+            supplier_repo.supplier_trend(shop_id, start_date, end_date),
+            customer_repo.customer_trend(shop_id, start_date, end_date),
+            purchase_repo.purchase_trend(shop_id, start_date, end_date),
+            stockmovadj_repo.trend(shop_id, start_date, end_date),
+            sales_repo.sales_trend(shop_id, start_date, end_date),
+        )
         return {
-            "suppliers": await supplier_repo.supplier_trend(
-                shop_id, start_date, end_date
-            ),
-            "customers": await customer_repo.customer_trend(
-                shop_id, start_date, end_date
-            ),
-            "purchases": await purchase_repo.purchase_trend(
-                shop_id, start_date, end_date
-            ),
-            "stock_adjustments": await stockmovadj_repo.trend(
-                shop_id, start_date, end_date
-            ),
-            "sales": await sales_repo.sales_trend(
-                shop_id, start_date, end_date
-            ),
+            "suppliers": suppliers,
+            "customers": customers,
+            "purchases": purchases,
+            "stock_adjustments": stock_adjustments,
+            "sales": sales,
         }
 
     async def inventory_health(self, shop_id: str):
+        (
+            overall,
+            low_stock,
+            out_of_stock,
+        ) = await asyncio.gather(
+            prod_inv_repo.get_overall(shop_id),
+            prod_inv_repo.low_stock_products(shop_id),
+            prod_inv_repo.out_of_stock_products(shop_id),
+        )
         return {
-            "overall": await prod_inv_repo.get_overall(shop_id),
-            "low_stock": await prod_inv_repo.low_stock_products(shop_id),
-            "out_of_stock": await prod_inv_repo.out_of_stock_products(shop_id),
+            "overall": overall,
+            "low_stock": low_stock,
+            "out_of_stock": out_of_stock,
         }
 
     async def full_report(
@@ -82,17 +134,27 @@ class AnalyticsQueryRepo:
         end_date: Optional[datetime] = None,
         limit: int = 10,
     ):
+        (
+            overview,
+            dashboard,
+            top,
+            trends,
+            inventory,
+        ) = await asyncio.gather(
+            self.overview(shop_id),
+            self.dashboard(shop_id, start_date, end_date),
+            self.top_entities(shop_id, limit),
+            self.trends(shop_id, start_date, end_date),
+            self.inventory_health(shop_id),
+        )
         return {
-            "overview": await self.overview(shop_id),
-            "dashboard": await self.dashboard(
-                shop_id, start_date, end_date
-            ),
-            "top": await self.top_entities(shop_id, limit),
-            "trends": await self.trends(
-                shop_id, start_date, end_date
-            ),
-            "inventory": await self.inventory_health(shop_id),
+            "overview": overview,
+            "dashboard": dashboard,
+            "top": top,
+            "trends": trends,
+            "inventory": inventory,
         }
+
     async def unified_dashboard(
         self,
         shop_id: str,
@@ -104,18 +166,44 @@ class AnalyticsQueryRepo:
     ):
         result = {}
         
+        # Concurrently fetch specific entity details if requested
+        entity_tasks = []
+        entity_keys = []
         if product_id:
-            result["product"] = await prod_inv_repo.get_product(shop_id, product_id)
+            entity_keys.append("product")
+            entity_tasks.append(prod_inv_repo.get_product(shop_id, product_id))
         if supplier_id:
-            result["supplier"] = await supplier_repo.get_supplier(shop_id, supplier_id)
+            entity_keys.append("supplier")
+            entity_tasks.append(supplier_repo.get_supplier(shop_id, supplier_id))
         if customer_id:
-            result["customer"] = await customer_repo.get_customer(shop_id, customer_id)
+            entity_keys.append("customer")
+            entity_tasks.append(customer_repo.get_customer(shop_id, customer_id))
             
-        result["overview"] = await self.overview(shop_id)
-        result["dashboard"] = await self.dashboard(shop_id, start_date, end_date)
-        result["trends"] = await self.trends(shop_id, start_date, end_date)
-        result["inventory"] = await self.inventory_health(shop_id)
-        result["top"] = await self.top_entities(shop_id, 3)
+        if entity_tasks:
+            entity_results = await asyncio.gather(*entity_tasks)
+            for k, val in zip(entity_keys, entity_results):
+                result[k] = val
+
+        # Concurrently execute dashboard sections
+        (
+            overview,
+            dashboard,
+            trends,
+            inventory,
+            top,
+        ) = await asyncio.gather(
+            self.overview(shop_id),
+            self.dashboard(shop_id, start_date, end_date),
+            self.trends(shop_id, start_date, end_date),
+            self.inventory_health(shop_id),
+            self.top_entities(shop_id, 3),
+        )
+        
+        result["overview"] = overview
+        result["dashboard"] = dashboard
+        result["trends"] = trends
+        result["inventory"] = inventory
+        result["top"] = top
             
         return result
 

@@ -27,6 +27,40 @@ from helpers.emit_stock_mov_adj import emit_stock_mov_adj
 from ..services.customfield_service import CustomFieldsService
 from schemas.v1.request_schemas.customfield_schema import CreateCustomFieldSchema,UpdateCustomFieldSchema,UpdateCustomFieldValueSchema,CreateCustomFieldValueSchema,BulkCreateCustomFieldValuesSchema
 
+def is_same_batch(b1, b2) -> bool:
+    if not b1 and not b2:
+        return True
+    if not b1 or not b2:
+        return False
+
+    b1_id = b1.get("id") if isinstance(b1, dict) else getattr(b1, "id", None)
+    b2_id = b2.get("id") if isinstance(b2, dict) else getattr(b2, "id", None)
+
+    b1_name = b1.get("name") if isinstance(b1, dict) else getattr(b1, "name", None)
+    b2_name = b2.get("name") if isinstance(b2, dict) else getattr(b2, "name", None)
+
+    s_b1_id = str(b1_id).strip() if b1_id and str(b1_id).strip() else None
+    s_b2_id = str(b2_id).strip() if b2_id and str(b2_id).strip() else None
+
+    s_b1_name = str(b1_name).strip().lower() if b1_name and str(b1_name).strip() else None
+    s_b2_name = str(b2_name).strip().lower() if b2_name and str(b2_name).strip() else None
+
+    if s_b1_id and s_b2_id:
+        return s_b1_id == s_b2_id
+
+    if s_b1_name and s_b2_name:
+        return s_b1_name == s_b2_name
+
+    if s_b1_id and s_b2_name and s_b1_id.lower() == s_b2_name:
+        return True
+    if s_b2_id and s_b1_name and s_b2_id.lower() == s_b1_name:
+        return True
+
+    if not s_b1_id and not s_b2_id and not s_b1_name and not s_b2_name:
+        return True
+
+    return False
+
 class ProductInventoryService:
     def __init__(self,session:AsyncSession):
         self.session=session
@@ -928,7 +962,7 @@ class ProductInventoryService:
                 v_batch_id = v_batch_infos.get("id") if v_batch_infos else None
                 v_type = inside_data.get("type")
 
-                if v_variant_id == inc_variant_id and v_batch_id == inc_batch_id and v_type == prod.type:
+                if v_variant_id == inc_variant_id and v_type == prod.type and is_same_batch(v_batch_infos, prod.batch_infos):
                     existing_entry = inside_data
                     break
 
