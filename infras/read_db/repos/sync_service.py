@@ -41,10 +41,25 @@ async def _fetch_all_pages(client: httpx.AsyncClient, base_url: str) -> tuple[li
                 return [], resp.status_code
             break
         r_json = resp.json()
-        items = r_json.get("data", []) if isinstance(r_json, dict) else (r_json if isinstance(r_json, list) else [])
-        if not items:
+        raw_data = r_json.get("data") if isinstance(r_json, dict) and "data" in r_json else r_json
+        
+        items = []
+        if isinstance(raw_data, list):
+            items = raw_data
+        elif isinstance(raw_data, dict):
+            for key in ["datas", "items", "data", "products", "orders", "purchases", "suppliers", "customers", "adjustments"]:
+                if isinstance(raw_data.get(key), list):
+                    items = raw_data[key]
+                    break
+            if not items:
+                if raw_data.get("id") or raw_data.get("_id"):
+                    items = [raw_data]
+                    
+        if not items or not isinstance(items, list):
             break
-        all_items.extend(items)
+            
+        dict_items = [it for it in items if isinstance(it, dict)]
+        all_items.extend(dict_items)
         if len(items) < limit:
             break
         offset += 1
@@ -435,26 +450,54 @@ class SyncService:
                 if status_code == 200:
                     datas = []
                     for o in orders:
+                        if not isinstance(o, dict):
+                            continue
                         o_date = str(o.get("created_at") or o.get("date") or "")
                         
                         # Precompute returns and exchanges
                         returned_qty_map = {}
-                        for ret in o.get("returns", []):
-                            for r_item in ret.get("items", []):
-                                oi_id = r_item.get("order_item_id")
-                                returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or 0.0)
+                        returns = o.get("returns") or []
+                        if isinstance(returns, list):
+                            for ret in returns:
+                                if not isinstance(ret, dict):
+                                    continue
+                                r_items = ret.get("items") or []
+                                if isinstance(r_items, list):
+                                    for r_item in r_items:
+                                        if not isinstance(r_item, dict):
+                                            continue
+                                        oi_id = r_item.get("order_item_id")
+                                        returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or 0.0)
                         
                         exchanged_qty_map = {}
-                        for exc in o.get("exchanges", []):
-                            for e_old in exc.get("old_items", []):
-                                oi_id = e_old.get("order_item_id")
-                                exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or 0.0)
+                        exchanges = o.get("exchanges") or []
+                        if isinstance(exchanges, list):
+                            for exc in exchanges:
+                                if not isinstance(exc, dict):
+                                    continue
+                                old_items = exc.get("old_items") or []
+                                if isinstance(old_items, list):
+                                    for e_old in old_items:
+                                        if not isinstance(e_old, dict):
+                                            continue
+                                        oi_id = e_old.get("order_item_id")
+                                        exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or 0.0)
                                 
-                        all_items = list(o.get("items", []))
-                        for exc in o.get("exchanges", []):
-                            all_items.extend(exc.get("replaced_items", []))
+                        all_items = []
+                        items_raw = o.get("items") or []
+                        if isinstance(items_raw, list):
+                            all_items.extend([it for it in items_raw if isinstance(it, dict)])
+                        if isinstance(exchanges, list):
+                            for exc in exchanges:
+                                if not isinstance(exc, dict):
+                                    continue
+                                repl_items = exc.get("replaced_items") or []
+                                if isinstance(repl_items, list):
+                                    all_items.extend([it for it in repl_items if isinstance(it, dict)])
 
                         for item in all_items:
+                            if not isinstance(item, dict):
+                                continue
                             oi_id = item.get("id") or item.get("order_item_id") or ""
                             gross_qty = float(item.get("quantity") or item.get("stocks") or 0.0)
                             net_qty = max(0.0, gross_qty - returned_qty_map.get(oi_id, 0.0) - exchanged_qty_map.get(oi_id, 0.0))
@@ -466,10 +509,15 @@ class SyncService:
                             cost_amounts = net_qty * buy_price
                             profit_amounts = sales_amounts - cost_amounts
                             
+                            cust_id = o.get("customer_id")
+                            if not isinstance(cust_id, str):
+                                cust_obj = o.get("customer")
+                                cust_id = cust_obj.get("customer_id") or cust_obj.get("id") if isinstance(cust_obj, dict) else None
+
                             datas.append(SalesAnalyticsDatas(
                                 sales_id=o.get("id") or "",
-                                customer_id=o.get("customer_id"),
-                                product_id=item.get("product_id") or "",
+                                customer_id=cust_id,
+                                product_id=item.get("product_id") or item.get("inventory_id") or "",
                                 variant_id=item.get("variant_id"),
                                 batch_id=item.get("batch_id"),
                                 stocks=net_qty,
@@ -728,25 +776,39 @@ class SyncService:
                 orders, status_code = await _fetch_all_pages(client, f"{ORDER_SERVICE_URL}/orders/{shop_id}")
                 if status_code == 200 and orders:
                     o = next((item for item in orders if item.get("id") == order_id), None)
-            if o:
+            if o and isinstance(o, dict):
                 o_date = str(o.get("created_at") or o.get("date") or "")
                 
                 # Precompute returns per order_item_id
                 returned_qty_map = {}
-                for ret in o.get("returns", []):
-                    for r_item in ret.get("items", []):
-                        oi_id = r_item.get("order_item_id")
-                        returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or 0.0)
+                returns = o.get("returns") or []
+                if isinstance(returns, list):
+                    for ret in returns:
+                        if not isinstance(ret, dict): continue
+                        r_items = ret.get("items") or []
+                        if isinstance(r_items, list):
+                            for r_item in r_items:
+                                if not isinstance(r_item, dict): continue
+                                oi_id = r_item.get("order_item_id")
+                                returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or 0.0)
                 
                 # Precompute exchanges per order_item_id
                 exchanged_qty_map = {}
-                for exc in o.get("exchanges", []):
-                    for e_old in exc.get("old_items", []):
-                        oi_id = e_old.get("order_item_id")
-                        exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or 0.0)
+                exchanges = o.get("exchanges") or []
+                if isinstance(exchanges, list):
+                    for exc in exchanges:
+                        if not isinstance(exc, dict): continue
+                        old_items = exc.get("old_items") or []
+                        if isinstance(old_items, list):
+                            for e_old in old_items:
+                                if not isinstance(e_old, dict): continue
+                                oi_id = e_old.get("order_item_id")
+                                exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or 0.0)
 
                 datas = []
-                for item in o.get("items", []):
+                items_raw = o.get("items") or []
+                order_items = [it for it in items_raw if isinstance(it, dict)] if isinstance(items_raw, list) else []
+                for item in order_items:
                     oi_id = item.get("id") or item.get("order_item_id") or ""
                     gross_qty = float(item.get("quantity") or item.get("stocks") or 0.0)
                     ret_qty = returned_qty_map.get(oi_id, 0.0)
