@@ -24,11 +24,10 @@ class ProdInvRepo(AnalyticsBaseRepo):
         await self.breakdown.create_index([("shop_id", 1), ("timestamp", -1)])
 
     @staticmethod
-    def _stock_state(stock_value: float, rop_value: float = 0.0) -> Tuple[bool, float, float]:
+    def _stock_state(stock_value: float, rop_value: float = 0.0, is_active: bool = True, have_tracking: bool = True) -> Tuple[bool, float, float]:
         stock = max(float(stock_value or 0), 0.0)
-        is_active = stock > 0
-        no_stock = 1.0 if stock <= 0 else 0.0
-        low_stock = 1.0 if (stock > 0 and rop_value > 0 and stock <= rop_value) else 0.0
+        no_stock = 1.0 if (is_active and have_tracking and stock <= 0) else 0.0
+        low_stock = 1.0 if (is_active and have_tracking and stock > 0 and rop_value > 0 and stock <= rop_value) else 0.0
         return is_active, no_stock, low_stock
 
     @staticmethod
@@ -40,9 +39,9 @@ class ProdInvRepo(AnalyticsBaseRepo):
         was_no_stock = float((previous_doc or {}).get("no_stocks") or 0) > 0
         was_low_stock = float((previous_doc or {}).get("low_stocks") or 0) > 0
 
-        is_active = next_stock > 0
-        is_no_stock = next_stock <= 0
-        is_low_stock = (next_stock > 0 and rop > 0 and next_stock <= rop)
+        is_active = bool(previous_doc.get("is_active", True)) if previous_doc else True
+        is_no_stock = is_active and next_stock <= 0
+        is_low_stock = is_active and next_stock > 0 and rop > 0 and next_stock <= rop
 
         delta = {}
         if was_active != is_active:
@@ -335,16 +334,20 @@ class ProdInvRepo(AnalyticsBaseRepo):
                 non_tracking += 1
                 continue
 
+            is_prod_active = any(bool(u.get("is_active")) for u in units)
             prod_stock = sum(float(u.get("stocks") or 0.0) for u in units)
-            prod_low_stock = sum(float(u.get("low_stocks") or 0.0) for u in units)
-            prod_no_stock = sum(float(u.get("no_stocks") or 0.0) for u in units)
 
             total_stock += prod_stock
-            low_stock += prod_low_stock
-            no_stock += prod_no_stock
 
-            if prod_stock > 0:
+            if is_prod_active:
                 active += 1
+                # Actual out of stock count: is_active == True AND stock == 0
+                if prod_stock <= 0:
+                    no_stock += 1
+                else:
+                    prod_low_stock = sum(float(u.get("low_stocks") or 0.0) for u in units)
+                    if prod_low_stock > 0:
+                        low_stock += 1
             else:
                 inactive += 1
 
@@ -571,7 +574,7 @@ class ProdInvRepo(AnalyticsBaseRepo):
 
     async def out_of_stock_products(self, shop_id: str):
         cursor = self.breakdown.find(
-            {"shop_id": shop_id, "no_stocks": {"$gt": 0}, "have_tracking": {"$ne": False}},
+            {"shop_id": shop_id, "is_active": True, "no_stocks": {"$gt": 0}, "have_tracking": {"$ne": False}},
             {"_id": 0}
         ).sort("timestamp", -1)
         return await cursor.to_list(length=None)

@@ -88,6 +88,9 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
     prod_id = p["id"]
     have_tracking = bool(p.get("have_tracking", True))
     created_at = str(p.get("created_at") or "")
+    
+    # Check actual product is_active status
+    is_active_prod = bool(p.get("is_active", True) if p.get("is_active") is not None else (p.get("status", "ACTIVE") == "ACTIVE"))
 
     # Non-tracking products are separated from stock/active metrics
     if not have_tracking:
@@ -117,15 +120,14 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
 
             stocks = float(s_info.get("available_stocks") or s_info.get("available_Stocks") or s_info.get("physical_stocks") or 0.0)
             rop = float(r_info.get("reorder_point") or 0.0)
-            is_active = stocks > 0
-            low_stocks = 1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0
-            no_stocks = 1.0 if stocks <= 0.0 else 0.0
+            low_stocks = 1.0 if (is_active_prod and stocks > 0 and rop > 0 and stocks <= rop) else 0.0
+            no_stocks = 1.0 if (is_active_prod and stocks <= 0.0) else 0.0
 
             items.append(ProdInvAnalyticsDatas(
                 product_id=prod_id,
                 variant_id=v_info.get("id") if isinstance(v_info, dict) else None,
                 batch_id=b_info.get("id") if isinstance(b_info, dict) else None,
-                is_active=is_active,
+                is_active=is_active_prod,
                 have_tracking=True,
                 stocks=stocks,
                 low_stocks=low_stocks,
@@ -146,16 +148,15 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
             rop_info = p.get("reorder_point_infos") or {}
             stocks = float(stock_info.get("available_stocks") or stock_info.get("available_Stocks") or stock_info.get("physical_stocks") or 0.0)
             rop = float(rop_info.get("reorder_point") or 0.0)
-            is_active = stocks > 0
             items.append(ProdInvAnalyticsDatas(
                 product_id=prod_id,
                 variant_id=None,
                 batch_id=None,
-                is_active=is_active,
+                is_active=is_active_prod,
                 have_tracking=True,
                 stocks=stocks,
-                low_stocks=1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
-                no_stocks=1.0 if stocks <= 0.0 else 0.0,
+                low_stocks=1.0 if (is_active_prod and stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
+                no_stocks=1.0 if (is_active_prod and stocks <= 0.0) else 0.0,
                 created_at=created_at
             ))
         else:
@@ -166,16 +167,15 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
                     b_rop = b.get("reorder_point_infos") or {}
                     stocks = float(b_stock.get("available_stocks") or b_stock.get("available_Stocks") or b_stock.get("physical_stocks") or 0.0)
                     rop = float(b_rop.get("reorder_point") or 0.0)
-                    is_active = stocks > 0
                     items.append(ProdInvAnalyticsDatas(
                         product_id=prod_id,
                         variant_id=None,
                         batch_id=b["id"],
-                        is_active=is_active,
+                        is_active=is_active_prod,
                         have_tracking=True,
                         stocks=stocks,
-                        low_stocks=1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
-                        no_stocks=1.0 if stocks <= 0.0 else 0.0,
+                        low_stocks=1.0 if (is_active_prod and stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
+                        no_stocks=1.0 if (is_active_prod and stocks <= 0.0) else 0.0,
                         created_at=created_at
                     ))
     else:
@@ -190,16 +190,15 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
                 v_rop = v.get("reorder_point_infos") or {}
                 stocks = float(v_stock.get("available_stocks") or v_stock.get("available_Stocks") or v_stock.get("physical_stocks") or 0.0)
                 rop = float(v_rop.get("reorder_point") or 0.0)
-                is_active = stocks > 0
                 items.append(ProdInvAnalyticsDatas(
                     product_id=prod_id,
                     variant_id=v_id,
                     batch_id=None,
-                    is_active=is_active,
+                    is_active=is_active_prod,
                     have_tracking=True,
                     stocks=stocks,
-                    low_stocks=1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
-                    no_stocks=1.0 if stocks <= 0.0 else 0.0,
+                    low_stocks=1.0 if (is_active_prod and stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
+                    no_stocks=1.0 if (is_active_prod and stocks <= 0.0) else 0.0,
                     created_at=created_at
                 ))
             else:
@@ -210,16 +209,15 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
                         b_rop = b.get("reorder_point_infos") or {}
                         stocks = float(b_stock.get("available_stocks") or b_stock.get("available_Stocks") or b_stock.get("physical_stocks") or 0.0)
                         rop = float(b_rop.get("reorder_point") or 0.0)
-                        is_active = stocks > 0
                         items.append(ProdInvAnalyticsDatas(
                             product_id=prod_id,
                             variant_id=v_id,
                             batch_id=b["id"],
-                            is_active=is_active,
+                            is_active=is_active_prod,
                             have_tracking=True,
                             stocks=stocks,
-                            low_stocks=1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
-                            no_stocks=1.0 if stocks <= 0.0 else 0.0,
+                            low_stocks=1.0 if (is_active_prod and stocks > 0 and rop > 0 and stocks <= rop) else 0.0,
+                            no_stocks=1.0 if (is_active_prod and stocks <= 0.0) else 0.0,
                             created_at=created_at
                         ))
 
@@ -228,16 +226,15 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
         rop_info = p.get("reorder_point_infos") or {}
         stocks = float(stock_info.get("available_stocks") or stock_info.get("available_Stocks") or stock_info.get("physical_stocks") or 0.0)
         rop = float(rop_info.get("reorder_point") or 0.0)
-        is_active = stocks > 0
         items.append(ProdInvAnalyticsDatas(
             product_id=prod_id,
             variant_id=None,
             batch_id=None,
-            is_active=is_active,
+            is_active=is_active_prod,
             have_tracking=have_tracking,
             stocks=stocks if have_tracking else 0.0,
-            low_stocks=(1.0 if (stocks > 0 and rop > 0 and stocks <= rop) else 0.0) if have_tracking else 0.0,
-            no_stocks=(1.0 if stocks <= 0.0 else 0.0) if have_tracking else 0.0,
+            low_stocks=(1.0 if (is_active_prod and stocks > 0 and rop > 0 and stocks <= rop) else 0.0) if have_tracking else 0.0,
+            no_stocks=(1.0 if (is_active_prod and stocks <= 0.0) else 0.0) if have_tracking else 0.0,
             created_at=created_at
         ))
 
