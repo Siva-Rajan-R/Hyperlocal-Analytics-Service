@@ -177,43 +177,45 @@ class InventoryRepo:
         return sync_data
     
     @start_db_transaction
-    async def update_bulk_pricing(self,data:List[UpdateInventoryPricingDbSchema]):
+    async def update_bulk_pricing(self, data: List[UpdateInventoryPricingDbSchema]):
         if not data:
             return True
         
-        stmt = (
-            update(InventoryPricings)
-            .where(
-                InventoryPricings.shop_id == bindparam("b_shop_id"),
-                InventoryPricings.product_id == bindparam("b_product_id"),
-                InventoryPricings.variant_id.is_not_distinct_from(bindparam("b_variant_id")),
-                InventoryPricings.batch_id.is_not_distinct_from(bindparam("b_batch_id")),
-            )
-            .values(
-                buy_price=bindparam("buy_price"),
-                sell_price=bindparam("sell_price")
-            )
-            .execution_options(synchronize_session=False)
-        )
-        conn = await self.session.connection()
-        res=(
-            await conn.execute(
-                stmt,
-                [
-                    {
-                        "b_shop_id":d.shop_id,
-                        "b_product_id":d.product_id,
-                        "b_variant_id":d.variant_id,
-                        "b_batch_id":d.batch_id,
-                        "buy_price":d.buy_price,
-                        "sell_price":d.sell_price,
-                    }
-                    for d in data
-                ]
-            )
-        )
+        from hyperlocal_platform.core.utils.uuid_generator import generate_uuid
 
-        ic(res)
+        to_insert = []
+        for d in data:
+            stmt = select(InventoryPricings).where(
+                InventoryPricings.shop_id == d.shop_id,
+                InventoryPricings.product_id == d.product_id,
+                InventoryPricings.variant_id.is_not_distinct_from(d.variant_id),
+                InventoryPricings.batch_id.is_not_distinct_from(d.batch_id),
+            )
+            res = await self.session.execute(stmt)
+            existing = res.scalars().first()
+            if existing:
+                if d.buy_price is not None:
+                    existing.buy_price = d.buy_price
+                if d.sell_price is not None:
+                    existing.sell_price = d.sell_price
+                if hasattr(d, 'online_sell_price') and d.online_sell_price is not None:
+                    existing.online_sell_price = d.online_sell_price
+            else:
+                to_insert.append(
+                    InventoryPricings(
+                        id=generate_uuid(),
+                        shop_id=d.shop_id,
+                        product_id=d.product_id,
+                        variant_id=d.variant_id,
+                        batch_id=d.batch_id,
+                        buy_price=d.buy_price or 0.0,
+                        sell_price=d.sell_price or 0.0,
+                        online_sell_price=getattr(d, 'online_sell_price', 0.0) or 0.0
+                    )
+                )
+        if to_insert:
+            self.session.add_all(to_insert)
+        await self.session.flush()
         return True
 
 
