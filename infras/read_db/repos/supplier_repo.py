@@ -81,6 +81,20 @@ class SupplierRepo(AnalyticsBaseRepo):
                 },
                 upsert=True,
             )
+        else:
+            await self.overall.update_one(
+                {"shop_id": payload.shop_id},
+                {
+                    "$set": {
+                        "shop_id": payload.shop_id,
+                        "total_suppliers": 0,
+                        "total_outstandings": 0.0,
+                        "total_cleared_amounts": 0.0,
+                        "timestamp": datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
         return {"status": "success"}
 
     async def apply_purchase(

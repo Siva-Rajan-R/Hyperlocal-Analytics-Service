@@ -92,6 +92,22 @@ class CustomerRepo(AnalyticsBaseRepo):
                 },
                 upsert=True,
             )
+        else:
+            await self.overall.update_one(
+                {"shop_id": payload.shop_id},
+                {
+                    "$set": {
+                        "shop_id": payload.shop_id,
+                        "total_customers": 0,
+                        "total_credit_limits": 0.0,
+                        "total_outstandings": 0.0,
+                        "total_cleared_amounts": 0.0,
+                        "total_settlements": 0,
+                        "timestamp": datetime.utcnow(),
+                    }
+                },
+                upsert=True,
+            )
         return {"status": "success"}
 
     async def apply_sale(
