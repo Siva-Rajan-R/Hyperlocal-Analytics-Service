@@ -176,8 +176,50 @@ class PurchaseRepo(AnalyticsBaseRepo):
                 upsert=True
             )
 
-    async def get_overall(self, shop_id: str):
-        return await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+    async def get_overall(
+        self,
+        shop_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        supplier_id: Optional[str] = None,
+    ):
+        if not start_date and not end_date and not supplier_id:
+            return await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+
+        match_filter = {"shop_id": shop_id}
+        if supplier_id:
+            match_filter["supplier_id"] = supplier_id
+        if start_date or end_date:
+            match_filter["timestamp"] = {}
+            if start_date:
+                match_filter["timestamp"]["$gte"] = start_date
+            if end_date:
+                match_filter["timestamp"]["$lte"] = end_date
+
+        pipeline = [
+            {"$match": match_filter},
+            {
+                "$group": {
+                    "_id": "$shop_id",
+                    "total_purchase": {"$sum": 1},
+                    "total_purchase_amounts": {"$sum": "$purchase_amounts"},
+                    "total_purchase_stocks": {"$sum": "$stocks"},
+                    "total_outstanding_amounts": {"$sum": "$outstanding_amounts"},
+                }
+            }
+        ]
+        res = await self.breakdown.aggregate(pipeline).to_list(1)
+        if res:
+            res[0].pop("_id", None)
+            res[0]["shop_id"] = shop_id
+            return res[0]
+        return {
+            "shop_id": shop_id,
+            "total_purchase": 0,
+            "total_purchase_amounts": 0.0,
+            "total_purchase_stocks": 0.0,
+            "total_outstanding_amounts": 0.0,
+        }
 
     async def get_daily(
         self,
@@ -204,8 +246,11 @@ class PurchaseRepo(AnalyticsBaseRepo):
         shop_id: str,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        supplier_id: Optional[str] = None,
     ):
         filters = {"shop_id": shop_id}
+        if supplier_id:
+            filters["supplier_id"] = supplier_id
         if start_date or end_date:
             filters["timestamp"] = {}
             if start_date:
@@ -213,25 +258,46 @@ class PurchaseRepo(AnalyticsBaseRepo):
             if end_date:
                 filters["timestamp"]["$lte"] = end_date
 
-        cursor = self.daily.aggregate([
-            {"$match": filters},
-            {
-                "$group": {
-                    "_id": "$date",
-                    "total_purchase": {"$sum": "$total_purchase"},
-                    "total_purchase_amounts": {"$sum": "$total_purchase_amounts"},
-                    "total_purchase_stocks": {"$sum": "$total_purchase_stocks"},
-                    "total_outstanding_amounts": {"$sum": "$total_outstanding_amounts"},
-                }
-            },
-            {"$sort": {"_id": 1}},
-        ])
+        if supplier_id:
+            cursor = self.breakdown.aggregate([
+                {"$match": filters},
+                {
+                    "$group": {
+                        "_id": "$date",
+                        "total_purchase": {"$sum": 1},
+                        "total_purchase_amounts": {"$sum": "$purchase_amounts"},
+                        "total_purchase_stocks": {"$sum": "$stocks"},
+                        "total_outstanding_amounts": {"$sum": "$outstanding_amounts"},
+                    }
+                },
+                {"$sort": {"_id": 1}},
+            ])
+        else:
+            cursor = self.daily.aggregate([
+                {"$match": filters},
+                {
+                    "$group": {
+                        "_id": "$date",
+                        "total_purchase": {"$sum": "$total_purchase"},
+                        "total_purchase_amounts": {"$sum": "$total_purchase_amounts"},
+                        "total_purchase_stocks": {"$sum": "$total_purchase_stocks"},
+                        "total_outstanding_amounts": {"$sum": "$total_outstanding_amounts"},
+                    }
+                },
+                {"$sort": {"_id": 1}},
+            ])
         return await cursor.to_list(length=None)
 
-    async def dashboard(self, shop_id: str):
+    async def dashboard(
+        self,
+        shop_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        supplier_id: Optional[str] = None,
+    ):
         return {
-            "overall": await self.get_overall(shop_id),
-            "trend": await self.purchase_trend(shop_id),
+            "overall": await self.get_overall(shop_id, start_date, end_date, supplier_id),
+            "trend": await self.purchase_trend(shop_id, start_date, end_date, supplier_id),
         }
 
     async def delete_shop(self, shop_id: str):

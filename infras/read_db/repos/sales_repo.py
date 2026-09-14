@@ -162,8 +162,57 @@ class SalesRepo(AnalyticsBaseRepo):
             )
         return {"status": "success"}
 
-    async def get_overall(self, shop_id: str):
-        return await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+    async def get_overall(
+        self,
+        shop_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ):
+        if not start_date and not end_date:
+            return await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+
+        filters = {"shop_id": shop_id}
+        if start_date or end_date:
+            filters["timestamp"] = {}
+            if start_date:
+                filters["timestamp"]["$gte"] = start_date
+            if end_date:
+                filters["timestamp"]["$lte"] = end_date
+
+        cursor = self.daily.aggregate([
+            {"$match": filters},
+            {
+                "$group": {
+                    "_id": "$shop_id",
+                    "total_sales": {"$sum": "$total_sales"},
+                    "total_sales_amounts": {"$sum": "$total_sales_amounts"},
+                    "total_cost": {"$sum": "$total_cost"},
+                    "total_profit": {"$sum": "$total_profit"},
+                    "total_sales_stocks": {"$sum": "$total_sales_stocks"},
+                    "total_online_sales": {"$sum": "$total_online_sales"},
+                    "total_online_sales_amount": {"$sum": "$total_online_sales_amount"},
+                    "total_offline_sales": {"$sum": "$total_offline_sales"},
+                    "total_offline_sales_amount": {"$sum": "$total_offline_sales_amount"},
+                }
+            }
+        ])
+        res = await cursor.to_list(1)
+        if res:
+            res[0].pop("_id", None)
+            res[0]["shop_id"] = shop_id
+            return res[0]
+        return {
+            "shop_id": shop_id,
+            "total_sales": 0,
+            "total_sales_amounts": 0.0,
+            "total_cost": 0.0,
+            "total_profit": 0.0,
+            "total_sales_stocks": 0.0,
+            "total_online_sales": 0,
+            "total_online_sales_amount": 0.0,
+            "total_offline_sales": 0,
+            "total_offline_sales_amount": 0.0,
+        }
 
     async def get_daily(
         self,
@@ -219,10 +268,15 @@ class SalesRepo(AnalyticsBaseRepo):
         ])
         return await cursor.to_list(length=None)
 
-    async def dashboard(self, shop_id: str):
+    async def dashboard(
+        self,
+        shop_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ):
         return {
-            "overall": await self.get_overall(shop_id),
-            "trend": await self.sales_trend(shop_id),
+            "overall": await self.get_overall(shop_id, start_date, end_date),
+            "trend": await self.sales_trend(shop_id, start_date, end_date),
         }
 
     async def delete_shop(self, shop_id: str):

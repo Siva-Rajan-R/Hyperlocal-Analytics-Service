@@ -18,6 +18,7 @@ class AnalyticsQueryRepo:
         shop_id: str,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        supplier_id: Optional[str] = None,
     ):
         (
             supplier,
@@ -29,10 +30,10 @@ class AnalyticsQueryRepo:
         ) = await asyncio.gather(
             supplier_repo.dashboard(shop_id),
             customer_repo.dashboard(shop_id),
-            purchase_repo.dashboard(shop_id),
+            purchase_repo.dashboard(shop_id, start_date=start_date, end_date=end_date, supplier_id=supplier_id),
             prod_inv_repo.dashboard(shop_id),
             stockmovadj_repo.dashboard(shop_id),
-            sales_repo.dashboard(shop_id),
+            sales_repo.dashboard(shop_id, start_date=start_date, end_date=end_date),
         )
         return {
             "supplier": supplier,
@@ -43,7 +44,13 @@ class AnalyticsQueryRepo:
             "sales": sales,
         }
 
-    async def overview(self, shop_id: str):
+    async def overview(
+        self,
+        shop_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        supplier_id: Optional[str] = None,
+    ):
         (
             supplier,
             customer,
@@ -52,12 +59,12 @@ class AnalyticsQueryRepo:
             stock_adj,
             sales,
         ) = await asyncio.gather(
-            supplier_repo.get_overall(shop_id),
+            supplier_repo.get_overall(shop_id, supplier_id=supplier_id),
             customer_repo.get_overall(shop_id),
-            purchase_repo.get_overall(shop_id),
+            purchase_repo.get_overall(shop_id, start_date=start_date, end_date=end_date, supplier_id=supplier_id),
             prod_inv_repo.get_overall(shop_id),
             stockmovadj_repo.get_overall(shop_id),
-            sales_repo.get_overall(shop_id),
+            sales_repo.get_overall(shop_id, start_date=start_date, end_date=end_date),
         )
         return {
             "supplier": supplier,
@@ -68,13 +75,13 @@ class AnalyticsQueryRepo:
             "sales": sales,
         }
 
-    async def top_entities(self, shop_id: str, limit: int = 3):
+    async def top_entities(self, shop_id: str, limit: int = 10, supplier_id: Optional[str] = None):
         (
             top_suppliers,
             top_customers,
             top_products,
         ) = await asyncio.gather(
-            supplier_repo.top_suppliers(shop_id, limit),
+            supplier_repo.top_suppliers(shop_id, limit, supplier_id=supplier_id),
             customer_repo.top_customers(shop_id, limit),
             prod_inv_repo.top_products(shop_id, limit),
         )
@@ -89,6 +96,7 @@ class AnalyticsQueryRepo:
         shop_id: str,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        supplier_id: Optional[str] = None,
     ):
         (
             suppliers,
@@ -99,7 +107,7 @@ class AnalyticsQueryRepo:
         ) = await asyncio.gather(
             supplier_repo.supplier_trend(shop_id, start_date, end_date),
             customer_repo.customer_trend(shop_id, start_date, end_date),
-            purchase_repo.purchase_trend(shop_id, start_date, end_date),
+            purchase_repo.purchase_trend(shop_id, start_date, end_date, supplier_id=supplier_id),
             stockmovadj_repo.trend(shop_id, start_date, end_date),
             sales_repo.sales_trend(shop_id, start_date, end_date),
         )
@@ -132,6 +140,7 @@ class AnalyticsQueryRepo:
         shop_id: str,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        supplier_id: Optional[str] = None,
         limit: int = 10,
     ):
         (
@@ -141,10 +150,10 @@ class AnalyticsQueryRepo:
             trends,
             inventory,
         ) = await asyncio.gather(
-            self.overview(shop_id),
-            self.dashboard(shop_id, start_date, end_date),
-            self.top_entities(shop_id, limit),
-            self.trends(shop_id, start_date, end_date),
+            self.overview(shop_id, start_date, end_date, supplier_id),
+            self.dashboard(shop_id, start_date, end_date, supplier_id),
+            self.top_entities(shop_id, limit, supplier_id),
+            self.trends(shop_id, start_date, end_date, supplier_id),
             self.inventory_health(shop_id),
         )
         return {
@@ -161,6 +170,7 @@ class AnalyticsQueryRepo:
         product_id: Optional[str] = None,
         supplier_id: Optional[str] = None,
         customer_id: Optional[str] = None,
+        category: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ):
@@ -192,11 +202,11 @@ class AnalyticsQueryRepo:
             inventory,
             top,
         ) = await asyncio.gather(
-            self.overview(shop_id),
-            self.dashboard(shop_id, start_date, end_date),
-            self.trends(shop_id, start_date, end_date),
+            self.overview(shop_id, start_date, end_date, supplier_id),
+            self.dashboard(shop_id, start_date, end_date, supplier_id),
+            self.trends(shop_id, start_date, end_date, supplier_id),
             self.inventory_health(shop_id),
-            self.top_entities(shop_id, 3),
+            self.top_entities(shop_id, 10, supplier_id),
         )
         
         result["overview"] = overview

@@ -17,6 +17,7 @@ async def get_unified_dashboard(
     product_id: Optional[str] = None,
     supplier_id: Optional[str] = None,
     customer_id: Optional[str] = None,
+    category: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
 ):
@@ -25,6 +26,7 @@ async def get_unified_dashboard(
         product_id=product_id,
         supplier_id=supplier_id,
         customer_id=customer_id,
+        category=category,
         start_date=start_date,
         end_date=end_date,
     )

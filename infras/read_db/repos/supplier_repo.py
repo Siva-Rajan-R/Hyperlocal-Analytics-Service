@@ -119,7 +119,22 @@ class SupplierRepo(AnalyticsBaseRepo):
             upsert=True,
         )
 
-    async def get_overall(self, shop_id: str):
+    async def get_overall(self, shop_id: str, supplier_id: Optional[str] = None):
+        if supplier_id:
+            doc = await self.breakdown.find_one({"shop_id": shop_id, "supplier_id": supplier_id}, {"_id": 0})
+            if doc:
+                return {
+                    "shop_id": shop_id,
+                    "total_suppliers": 1,
+                    "total_outstandings": float(doc.get("total_outstandings", 0.0)),
+                    "total_cleared_amounts": float(doc.get("total_cleared_amounts", 0.0)),
+                }
+            return {
+                "shop_id": shop_id,
+                "total_suppliers": 0,
+                "total_outstandings": 0.0,
+                "total_cleared_amounts": 0.0,
+            }
         return await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
 
     async def get_supplier(self, shop_id: str, supplier_id: str):
@@ -154,9 +169,12 @@ class SupplierRepo(AnalyticsBaseRepo):
             page_size=page_size,
         )
 
-    async def top_suppliers(self, shop_id: str, limit: int = 10):
+    async def top_suppliers(self, shop_id: str, limit: int = 10, supplier_id: Optional[str] = None):
+        filters = {"shop_id": shop_id}
+        if supplier_id:
+            filters["supplier_id"] = supplier_id
         cursor = self.breakdown.find(
-            {"shop_id": shop_id},
+            filters,
             {"_id": 0}
         ).sort("total_purchases", -1).limit(limit)
         return await cursor.to_list(length=None)
