@@ -502,7 +502,18 @@ class SyncService:
                             gross_qty = float(item.get("quantity") or item.get("stocks") or 0.0)
                             net_qty = max(0.0, gross_qty - returned_qty_map.get(oi_id, 0.0) - exchanged_qty_map.get(oi_id, 0.0))
                             
-                            sell_price = float(item.get("sell_price") or item.get("price") or 0.0)
+                            # Resolve true sell price (check calculation_infos.items for base unit price)
+                            calc_items = (o.get("calculation_infos") or {}).get("items") or []
+                            calc_item_price = None
+                            for ci in calc_items:
+                                if isinstance(ci, dict):
+                                    ci_pid = ci.get("product_id") or ci.get("inventory_id")
+                                    it_pid = item.get("product_id") or item.get("inventory_id")
+                                    if (ci_pid and ci_pid == it_pid) or (ci.get("name") and ci.get("name") == item.get("name")):
+                                        calc_item_price = float(ci.get("price") or 0.0)
+                                        break
+
+                            sell_price = calc_item_price if (calc_item_price is not None and calc_item_price > 0) else float(item.get("sell_price") or item.get("price") or 0.0)
                             buy_price = float(item.get("buy_price") or 0.0)
                             
                             sales_amounts = net_qty * sell_price
@@ -815,7 +826,18 @@ class SyncService:
                     exc_qty = exchanged_qty_map.get(oi_id, 0.0)
                     net_qty = max(0.0, gross_qty - ret_qty - exc_qty)
                     
-                    sell_price = float(item.get("sell_price") or item.get("price") or 0.0)
+                    # Resolve true sell price (check calculation_infos.items for base unit price)
+                    calc_items = (o.get("calculation_infos") or {}).get("items") or []
+                    calc_item_price = None
+                    for ci in calc_items:
+                        if isinstance(ci, dict):
+                            ci_pid = ci.get("product_id") or ci.get("inventory_id")
+                            it_pid = item.get("product_id") or item.get("inventory_id")
+                            if (ci_pid and ci_pid == it_pid) or (ci.get("name") and ci.get("name") == item.get("name")):
+                                calc_item_price = float(ci.get("price") or 0.0)
+                                break
+
+                    sell_price = calc_item_price if (calc_item_price is not None and calc_item_price > 0) else float(item.get("sell_price") or item.get("price") or 0.0)
                     buy_price = float(item.get("buy_price") or 0.0)
                     
                     sales_amounts = net_qty * sell_price
