@@ -37,8 +37,12 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
 
         for item in payload.datas:
             total += 1
-            qty = item.stocks or 0
-            is_inc = (item.type or "").upper() in ("IN", "INCREMENT", "ADD", "PLUS")
+            qty = abs(float(item.stocks or 0))
+            t_upper = str(item.type or "").upper()
+            is_inc = t_upper in (
+                "IN", "INCREMENT", "ADD", "PLUS", "PURCHASE", "PO_PURCHASE",
+                "SALE_RETURN", "SALES_RETURN", "POSITIVE_ADJUSTMENT"
+            ) and not (item.stocks is not None and float(item.stocks) < 0)
 
             if is_inc:
                 increments += qty

@@ -562,12 +562,27 @@ class SyncService:
                             var_info = item.get("variant_infos") or {}
                             bat_info = item.get("batch_infos") or {}
                             
+                            p_type = str(item.get("type") or "").upper()
+                            m_type = str(m.get("movement_type") or "").upper()
+                            if p_type in ("INCREMENT", "IN", "ADD", "PLUS"):
+                                final_type = "INCREMENT"
+                            elif p_type in ("DECREMENT", "OUT", "MINUS"):
+                                final_type = "DECREMENT"
+                            elif m_type in ("PURCHASE", "PO_PURCHASE", "SALE_RETURN", "SALES_RETURN", "POSITIVE_ADJUSTMENT"):
+                                final_type = "INCREMENT"
+                            elif m_type in ("SALES", "PURCHASE_RETURN", "DAMAGE", "NEGATIVE_ADJUSTMENT", "OUT"):
+                                final_type = "DECREMENT"
+                            else:
+                                final_type = "INCREMENT" if float(stock_info.get("stocks") or item.get("stocks") or 0.0) >= 0 else "DECREMENT"
+
+                            raw_stocks = abs(float(stock_info.get("stocks") or item.get("stocks") or 0.0))
+
                             datas.append(StockMovAdjAnalyticsDatas(
                                 product_id=item.get("product_id") or "",
                                 variant_id=var_info.get("variant_id") or item.get("variant_id"),
                                 batch_id=bat_info.get("batch_id") or item.get("batch_id"),
-                                stocks=float(stock_info.get("stocks") or item.get("stocks") or 0.0),
-                                type=item.get("type") or m.get("movement_type") or "INCREMENT",
+                                stocks=raw_stocks,
+                                type=final_type,
                                 created_at=m_date
                             ))
                     if datas:
@@ -921,12 +936,27 @@ class SyncService:
                     stock_info = item.get("stock_infos") or {}
                     var_info = item.get("variant_infos") or {}
                     bat_info = item.get("batch_infos") or {}
+                    p_type = str(item.get("type") or "").upper()
+                    m_type = str(m.get("movement_type") or "").upper()
+                    if p_type in ("INCREMENT", "IN", "ADD", "PLUS"):
+                        final_type = "INCREMENT"
+                    elif p_type in ("DECREMENT", "OUT", "MINUS"):
+                        final_type = "DECREMENT"
+                    elif m_type in ("PURCHASE", "PO_PURCHASE", "SALE_RETURN", "SALES_RETURN", "POSITIVE_ADJUSTMENT"):
+                        final_type = "INCREMENT"
+                    elif m_type in ("SALES", "PURCHASE_RETURN", "DAMAGE", "NEGATIVE_ADJUSTMENT", "OUT"):
+                        final_type = "DECREMENT"
+                    else:
+                        final_type = "INCREMENT" if float(stock_info.get("stocks") or item.get("stocks") or 0.0) >= 0 else "DECREMENT"
+
+                    raw_stocks = abs(float(stock_info.get("stocks") or item.get("stocks") or 0.0))
+
                     datas.append(StockMovAdjAnalyticsDatas(
                         product_id=item.get("product_id") or "",
                         variant_id=var_info.get("variant_id") or item.get("variant_id"),
                         batch_id=bat_info.get("batch_id") or item.get("batch_id"),
-                        stocks=float(stock_info.get("stocks") or item.get("stocks") or 0.0),
-                        type=item.get("type") or m.get("movement_type") or "INCREMENT",
+                        stocks=raw_stocks,
+                        type=final_type,
                         created_at=m_date
                     ))
                 if datas:
