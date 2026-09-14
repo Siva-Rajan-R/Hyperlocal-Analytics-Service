@@ -32,17 +32,11 @@ async def sync_shop_data(
     }
 
     try:
-        # 1. Enqueue background task via ARQ
-        redis_pool = await create_pool(RedisSettings.from_dsn(REDIS_URL))
-        await redis_pool.enqueue_job(
-            "sync_analytics_task",
-            payload,
-            _job_id=job_id,
-            _queue_name="analytics_sync_queue"
-        )
-        await redis_pool.close()
+        from background_worker import sync_analytics_task
+        # Launch background execution directly in asyncio loop
+        asyncio.create_task(sync_analytics_task(None, payload))
 
-        # 2. Store initial status in Redis
+        # Store initial status in Redis
         redis_client = aioredis.Redis.from_url(REDIS_URL, decode_responses=True)
         job_data = {
             "job_id": job_id,

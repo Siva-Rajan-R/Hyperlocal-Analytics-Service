@@ -18,6 +18,7 @@ async def analytics_service_lifespan(app:FastAPI):
         ic("Starting analytics service...")
         await init_infra_db()
         await check_redis_health()
+        print("[ANALYTICS] ✅ Database & Redis initialized. Ready for analytics background sync.")
         # await redis_client.flushdb()
         asyncio.create_task(worker())
         yield
