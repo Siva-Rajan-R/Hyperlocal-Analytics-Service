@@ -20,14 +20,17 @@ async def analytics_service_lifespan(app:FastAPI):
         await check_redis_health()
         print("[ANALYTICS] ✅ Database & Redis initialized. Ready for analytics background sync.")
         # await redis_client.flushdb()
-        asyncio.create_task(worker())
+        app.state.worker_task = asyncio.create_task(worker())
         yield
 
     except Exception as e:
         ic(f"Error : Starting analytics service => {e}")
 
     finally:
-        ic("...Stoping analytics Servcie...")
+        ic("...Stopping analytics Service...")
+        if hasattr(app.state, "worker_task") and app.state.worker_task:
+            app.state.worker_task.cancel()
+            await asyncio.gather(app.state.worker_task, return_exceptions=True)
 
 debug=False
 openapi_url=None

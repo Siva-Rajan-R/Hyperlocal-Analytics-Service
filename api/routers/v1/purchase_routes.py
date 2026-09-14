@@ -37,8 +37,16 @@ async def process_purchase_event(
 @router.get("/overall")
 async def get_purchase_overall(
     shop_id: str,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    supplier_id: Optional[str] = None,
 ):
-    return await PurchaseRepo().get_overall(shop_id)
+    return await PurchaseRepo().get_overall(
+        shop_id=shop_id,
+        start_date=start_date,
+        end_date=end_date,
+        supplier_id=supplier_id,
+    )
 
 
 @router.get("/daily")
@@ -59,19 +67,29 @@ async def purchase_trend(
     shop_id: str,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    supplier_id: Optional[str] = None,
 ):
     return await PurchaseRepo().purchase_trend(
         shop_id=shop_id,
         start_date=start_date,
         end_date=end_date,
+        supplier_id=supplier_id,
     )
 
 
 @router.get("/dashboard")
 async def purchase_dashboard(
     shop_id: str,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    supplier_id: Optional[str] = None,
 ):
-    return await PurchaseRepo().dashboard(shop_id)
+    return await PurchaseRepo().dashboard(
+        shop_id=shop_id,
+        start_date=start_date,
+        end_date=end_date,
+        supplier_id=supplier_id,
+    )
 
 
 # ---------------------------------------------------------

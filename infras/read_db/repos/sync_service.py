@@ -375,8 +375,15 @@ class SyncService:
             async with httpx.AsyncClient() as client:
                 purchases, status_code = await _fetch_all_pages(client, f"{PURCHASE_SERVICE_URL}/purchases/by/shop/{shop_id}")
                 if status_code == 200:
+                    # Clean out all purchase breakdown documents for this shop to avoid keeping stale/canceled purchases
+                    await purchase_repo.breakdown.delete_many({"shop_id": shop_id})
+
+                    valid_purchases = [
+                        p for p in purchases 
+                        if str(p.get("status", "")).upper() not in ("CANCELED", "CANCELLED", "DRAFT")
+                    ]
                     datas = []
-                    for p in purchases:
+                    for p in valid_purchases:
                         p_id = p.get("id") or p.get("purchase_id") or ""
                         p_date = str(p.get("created_at") or p.get("date") or "")
                         p_outst = float(p.get("outstanding_amount") or 0.0)
@@ -433,11 +440,13 @@ class SyncService:
                                 created_at=p_date
                             ))
                     if datas:
-                        payload = PurchaseAnalyticsSchema(shop_id=shop_id, total_purchase=len(purchases), datas=datas)
+                        payload = PurchaseAnalyticsSchema(shop_id=shop_id, total_purchase=len(valid_purchases), datas=datas)
                         await purchase_repo.process_event(payload)
-                        status["purchases"] = f"Synced {len(purchases)} purchases"
+                        status["purchases"] = f"Synced {len(valid_purchases)} purchases"
                     else:
-                        status["purchases"] = "No purchases found"
+                        await purchase_repo.recalculate_overall(shop_id)
+                        await purchase_repo.recalculate_daily(shop_id)
+                        status["purchases"] = "No active purchases found"
                 else:
                     status["purchases"] = f"Failed to fetch purchases: {status_code}"
         except Exception as e:
@@ -725,6 +734,12 @@ class SyncService:
                     p = next((item for item in purchases if item.get("id") == purchase_id or item.get("purchase_id") == purchase_id), None)
             if p:
                 p_id = p.get("id") or p.get("purchase_id") or ""
+                p_status = str(p.get("status", "")).upper()
+                if p_status in ("CANCELED", "CANCELLED", "DRAFT"):
+                    await purchase_repo.breakdown.delete_one({"shop_id": shop_id, "$or": [{"purchase_id": p_id}, {"id": p_id}]})
+                    await purchase_repo.recalculate_overall(shop_id)
+                    await purchase_repo.recalculate_daily(shop_id)
+                    return {"status": "canceled_purged"}
                 p_date = str(p.get("created_at") or p.get("date") or "")
                 
                 # Precompute returns per purchase item

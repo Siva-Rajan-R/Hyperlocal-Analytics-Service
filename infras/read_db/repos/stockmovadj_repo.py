@@ -8,6 +8,28 @@ from schemas.v1.stockmovadj_schemas.request_schemas import StockMovAdjAnalyticsS
 from .analytics_base_repo import AnalyticsBaseRepo
 
 
+def _extract_date_str(val) -> str:
+    if not val:
+        return datetime.utcnow().strftime("%Y-%m-%d")
+    if isinstance(val, datetime):
+        return val.strftime("%Y-%m-%d")
+    s = str(val).strip()
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+def _parse_datetime(val) -> datetime:
+    if isinstance(val, datetime):
+        return val
+    if val:
+        try:
+            s = str(val).strip().replace("Z", "+00:00")
+            return datetime.fromisoformat(s)
+        except Exception:
+            pass
+    return datetime.utcnow()
+
+
 class StockMovAdjRepo(AnalyticsBaseRepo):
 
     def __init__(self):
@@ -25,14 +47,6 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
         decrements = 0.0
         total = 0
 
-        def _extract_date(val) -> str:
-            if not val:
-                return datetime.utcnow().strftime("%Y-%m-%d")
-            s = str(val).strip()
-            if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-                return s[:10]
-            return datetime.utcnow().strftime("%Y-%m-%d")
-
         daily_groups = {}
 
         for item in payload.datas:
@@ -49,7 +63,7 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
             else:
                 decrements += qty
 
-            d = _extract_date(getattr(item, "created_at", None))
+            d = _extract_date_str(getattr(item, "created_at", None))
             if d not in daily_groups:
                 daily_groups[d] = {
                     "total": 0,
@@ -92,7 +106,7 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
         )
 
         for d, stats in daily_groups.items():
-            ts = stats["latest_created"] if stats["latest_created"] else datetime.utcnow()
+            ts = _parse_datetime(stats["latest_created"]) if stats["latest_created"] else datetime.utcnow()
             await self.daily.update_one(
                 {
                     "shop_id": payload.shop_id,
@@ -129,15 +143,16 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
         filters = {"shop_id": shop_id}
 
         if start_date or end_date:
-            filters["timestamp"] = {}
+            date_filter = {}
             if start_date:
-                filters["timestamp"]["$gte"] = start_date
+                date_filter["$gte"] = _extract_date_str(start_date)
             if end_date:
-                filters["timestamp"]["$lte"] = end_date
+                date_filter["$lte"] = _extract_date_str(end_date)
+            filters["date"] = date_filter
 
         return await self.find_many(
             filters=filters,
-            sort=[("timestamp", -1)],
+            sort=[("date", -1)],
         )
 
     async def trend(
@@ -149,11 +164,12 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
         filters = {"shop_id": shop_id}
 
         if start_date or end_date:
-            filters["timestamp"] = {}
+            date_filter = {}
             if start_date:
-                filters["timestamp"]["$gte"] = start_date
+                date_filter["$gte"] = _extract_date_str(start_date)
             if end_date:
-                filters["timestamp"]["$lte"] = end_date
+                date_filter["$lte"] = _extract_date_str(end_date)
+            filters["date"] = date_filter
 
         return await self.aggregate([
             {"$match": filters},
@@ -168,11 +184,16 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
             {"$sort": {"_id": 1}},
         ])
 
-    async def dashboard(self, shop_id: str):
+    async def dashboard(
+        self,
+        shop_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ):
         return {
             "overall": await self.get_overall(shop_id),
-            "daily": await self.daily_history(shop_id),
-            "trend": await self.trend(shop_id),
+            "daily": await self.daily_history(shop_id, start_date=start_date, end_date=end_date),
+            "trend": await self.trend(shop_id, start_date=start_date, end_date=end_date),
         }
 
     async def delete_shop(self, shop_id: str):

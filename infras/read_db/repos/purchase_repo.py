@@ -7,6 +7,28 @@ from schemas.v1.purchase_schemas.request_schemas import PurchaseAnalyticsSchema,
 from .analytics_base_repo import AnalyticsBaseRepo
 
 
+def _extract_date_str(val) -> str:
+    if not val:
+        return datetime.utcnow().strftime("%Y-%m-%d")
+    if isinstance(val, datetime):
+        return val.strftime("%Y-%m-%d")
+    s = str(val).strip()
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+def _parse_datetime(val) -> datetime:
+    if isinstance(val, datetime):
+        return val
+    if val:
+        try:
+            s = str(val).strip().replace("Z", "+00:00")
+            return datetime.fromisoformat(s)
+        except Exception:
+            pass
+    return datetime.utcnow()
+
+
 class PurchaseRepo(AnalyticsBaseRepo):
 
     def __init__(self):
@@ -23,13 +45,9 @@ class PurchaseRepo(AnalyticsBaseRepo):
         await self.daily.create_index([("shop_id", 1), ("timestamp", -1)])
 
     async def process_event(self, payload: PurchaseAnalyticsSchema):
-        def _extract_date(val) -> str:
-            if not val:
-                return datetime.utcnow().strftime("%Y-%m-%d")
-            s = str(val).strip()
-            if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-                return s[:10]
-            return datetime.utcnow().strftime("%Y-%m-%d")
+        is_cancellation = (getattr(payload, "total_purchase", 1) is not None and payload.total_purchase < 0) or (
+            len(payload.datas) > 0 and all((item.stocks or 0) <= 0 and (item.purchase_amounts or 0) <= 0 for item in payload.datas)
+        )
 
         # Group incoming items by purchase_id
         purchases_map = {}
@@ -43,12 +61,15 @@ class PurchaseRepo(AnalyticsBaseRepo):
                     "purchase_amounts": 0.0,
                     "outstanding_amounts": float(item.outstanding_amounts or 0.0),
                     "created_at": item.created_at,
-                    "date": _extract_date(item.created_at)
+                    "date": _extract_date_str(item.created_at)
                 }
             purchases_map[p_id]["stocks"] += float(item.stocks or 0.0)
             purchases_map[p_id]["purchase_amounts"] += float(item.purchase_amounts or 0.0)
             if item.outstanding_amounts is not None and float(item.outstanding_amounts) > 0:
                 purchases_map[p_id]["outstanding_amounts"] = float(item.outstanding_amounts)
+
+            # Determine total_purchase delta for breakdown counters
+            total_pur_delta = -1 if is_cancellation else (1 if (item.stocks or 0) > 0 else (-1 if (item.stocks or 0) < 0 else 0))
 
             # Update metrics on product breakdown & supplier breakdown
             from .prod_inv_repo import prod_inv_repo
@@ -60,7 +81,7 @@ class PurchaseRepo(AnalyticsBaseRepo):
                 stocks=item.stocks or 0.0,
                 amount=item.purchase_amounts or 0.0,
                 outstanding=item.outstanding_amounts or 0.0,
-                total_purchase=1,
+                total_purchase=total_pur_delta,
             )
 
             from .supplier_repo import supplier_repo
@@ -68,28 +89,33 @@ class PurchaseRepo(AnalyticsBaseRepo):
                 shop_id=payload.shop_id,
                 supplier_id=item.supplier_id,
                 amount=item.purchase_amounts or 0.0,
-                total_purchase=1,
+                total_purchase=total_pur_delta,
             )
 
-        # Upsert each purchase in breakdown
+        # Upsert or delete each purchase in breakdown
         for p_id, p_data in purchases_map.items():
-            await self.breakdown.update_one(
-                {"shop_id": payload.shop_id, "purchase_id": p_id},
-                {
-                    "$set": {
-                        "shop_id": payload.shop_id,
-                        "purchase_id": p_id,
-                        "supplier_id": p_data["supplier_id"],
-                        "stocks": p_data["stocks"],
-                        "purchase_amounts": p_data["purchase_amounts"],
-                        "outstanding_amounts": p_data["outstanding_amounts"],
-                        "date": p_data["date"],
-                        "created_at": p_data["created_at"],
-                        "timestamp": datetime.utcnow()
-                    }
-                },
-                upsert=True
-            )
+            if is_cancellation or (p_data["stocks"] <= 0 and p_data["purchase_amounts"] <= 0):
+                await self.breakdown.delete_one(
+                    {"shop_id": payload.shop_id, "purchase_id": p_id}
+                )
+            else:
+                await self.breakdown.update_one(
+                    {"shop_id": payload.shop_id, "purchase_id": p_id},
+                    {
+                        "$set": {
+                            "shop_id": payload.shop_id,
+                            "purchase_id": p_id,
+                            "supplier_id": p_data["supplier_id"],
+                            "stocks": p_data["stocks"],
+                            "purchase_amounts": p_data["purchase_amounts"],
+                            "outstanding_amounts": p_data["outstanding_amounts"],
+                            "date": p_data["date"],
+                            "created_at": p_data["created_at"],
+                            "timestamp": _parse_datetime(p_data["created_at"]) if p_data.get("created_at") else datetime.utcnow()
+                        }
+                    },
+                    upsert=True
+                )
 
         # Recalculate overall & daily from breakdown
         await self.recalculate_overall(payload.shop_id)
@@ -190,11 +216,12 @@ class PurchaseRepo(AnalyticsBaseRepo):
         if supplier_id:
             match_filter["supplier_id"] = supplier_id
         if start_date or end_date:
-            match_filter["timestamp"] = {}
+            date_filter = {}
             if start_date:
-                match_filter["timestamp"]["$gte"] = start_date
+                date_filter["$gte"] = _extract_date_str(start_date)
             if end_date:
-                match_filter["timestamp"]["$lte"] = end_date
+                date_filter["$lte"] = _extract_date_str(end_date)
+            match_filter["date"] = date_filter
 
         pipeline = [
             {"$match": match_filter},
@@ -230,15 +257,16 @@ class PurchaseRepo(AnalyticsBaseRepo):
         filters = {"shop_id": shop_id}
 
         if start_date or end_date:
-            filters["timestamp"] = {}
+            date_filter = {}
             if start_date:
-                filters["timestamp"]["$gte"] = start_date
+                date_filter["$gte"] = _extract_date_str(start_date)
             if end_date:
-                filters["timestamp"]["$lte"] = end_date
+                date_filter["$lte"] = _extract_date_str(end_date)
+            filters["date"] = date_filter
 
         return await self.find_many(
             filters=filters,
-            sort=[("timestamp", -1)],
+            sort=[("date", -1)],
         )
 
     async def purchase_trend(
@@ -252,11 +280,12 @@ class PurchaseRepo(AnalyticsBaseRepo):
         if supplier_id:
             filters["supplier_id"] = supplier_id
         if start_date or end_date:
-            filters["timestamp"] = {}
+            date_filter = {}
             if start_date:
-                filters["timestamp"]["$gte"] = start_date
+                date_filter["$gte"] = _extract_date_str(start_date)
             if end_date:
-                filters["timestamp"]["$lte"] = end_date
+                date_filter["$lte"] = _extract_date_str(end_date)
+            filters["date"] = date_filter
 
         if supplier_id:
             cursor = self.breakdown.aggregate([

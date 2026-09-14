@@ -7,6 +7,18 @@ from schemas.v1.customer_schemas.request_schemas import CustomerAnalyticsSchema
 from .analytics_base_repo import AnalyticsBaseRepo
 
 
+def _parse_datetime(val) -> Optional[datetime]:
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val
+    try:
+        s = str(val).strip().replace("Z", "+00:00")
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
 class CustomerRepo(AnalyticsBaseRepo):
 
     def __init__(self):
@@ -71,6 +83,16 @@ class CustomerRepo(AnalyticsBaseRepo):
                     "total_outstandings": {"$sum": "$total_outstandings"},
                     "total_cleared_amounts": {"$sum": "$total_cleared_amounts"},
                     "total_settlements": {"$sum": "$total_settlements"},
+                    "outstanding_customers_count": {
+                        "$sum": {
+                            "$cond": [{"$gt": ["$total_outstandings", 0]}, 1, 0]
+                        }
+                    },
+                    "total_outstanding_customers": {
+                        "$sum": {
+                            "$cond": [{"$gt": ["$total_outstandings", 0]}, 1, 0]
+                        }
+                    },
                 }
             }
         ]
@@ -87,6 +109,8 @@ class CustomerRepo(AnalyticsBaseRepo):
                         "total_outstandings": float(tot.get("total_outstandings", 0.0)),
                         "total_cleared_amounts": float(tot.get("total_cleared_amounts", 0.0)),
                         "total_settlements": int(tot.get("total_settlements", 0)),
+                        "outstanding_customers_count": int(tot.get("outstanding_customers_count", 0)),
+                        "total_outstanding_customers": int(tot.get("total_outstanding_customers", 0)),
                         "timestamp": datetime.utcnow(),
                     }
                 },
@@ -103,6 +127,8 @@ class CustomerRepo(AnalyticsBaseRepo):
                         "total_outstandings": 0.0,
                         "total_cleared_amounts": 0.0,
                         "total_settlements": 0,
+                        "outstanding_customers_count": 0,
+                        "total_outstanding_customers": 0,
                         "timestamp": datetime.utcnow(),
                     }
                 },
@@ -143,7 +169,16 @@ class CustomerRepo(AnalyticsBaseRepo):
         )
 
     async def get_overall(self, shop_id: str):
-        return await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+        doc = await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+        if doc and "outstanding_customers_count" not in doc:
+            out_count = await self.breakdown.count_documents({"shop_id": shop_id, "total_outstandings": {"$gt": 0}})
+            doc["outstanding_customers_count"] = out_count
+            doc["total_outstanding_customers"] = out_count
+            await self.overall.update_one(
+                {"shop_id": shop_id},
+                {"$set": {"outstanding_customers_count": out_count, "total_outstanding_customers": out_count}}
+            )
+        return doc
 
     async def get_customer(self, shop_id: str, customer_id: str):
         return await self.breakdown.find_one(
@@ -161,12 +196,14 @@ class CustomerRepo(AnalyticsBaseRepo):
         sales_type: Optional[str] = None,
     ):
         filters = {"shop_id": shop_id}
-        if start_date or end_date:
+        parsed_start = _parse_datetime(start_date)
+        parsed_end = _parse_datetime(end_date)
+        if parsed_start or parsed_end:
             filters["timestamp"] = {}
-            if start_date:
-                filters["timestamp"]["$gte"] = start_date
-            if end_date:
-                filters["timestamp"]["$lte"] = end_date
+            if parsed_start:
+                filters["timestamp"]["$gte"] = parsed_start
+            if parsed_end:
+                filters["timestamp"]["$lte"] = parsed_end
                 
         if sales_type:
             if sales_type.upper() == "ONLINE":
@@ -197,12 +234,14 @@ class CustomerRepo(AnalyticsBaseRepo):
         end_date: Optional[datetime] = None,
     ):
         filters = {"shop_id": shop_id}
-        if start_date or end_date:
+        parsed_start = _parse_datetime(start_date)
+        parsed_end = _parse_datetime(end_date)
+        if parsed_start or parsed_end:
             filters["timestamp"] = {}
-            if start_date:
-                filters["timestamp"]["$gte"] = start_date
-            if end_date:
-                filters["timestamp"]["$lte"] = end_date
+            if parsed_start:
+                filters["timestamp"]["$gte"] = parsed_start
+            if parsed_end:
+                filters["timestamp"]["$lte"] = parsed_end
 
         return await self.aggregate([
             {"$match": filters},

@@ -8,6 +8,18 @@ from schemas.v1.supplier_schemas.request_schemas import SupplierAnalyticsSchema
 from .analytics_base_repo import AnalyticsBaseRepo
 
 
+def _parse_datetime(val) -> Optional[datetime]:
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val
+    try:
+        s = str(val).strip().replace("Z", "+00:00")
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
 class SupplierRepo(AnalyticsBaseRepo):
 
     def __init__(self):
@@ -62,6 +74,16 @@ class SupplierRepo(AnalyticsBaseRepo):
                     "total_suppliers": {"$sum": 1},
                     "total_outstandings": {"$sum": "$total_outstandings"},
                     "total_cleared_amounts": {"$sum": "$total_cleared_amounts"},
+                    "total_outstanding_suppliers": {
+                        "$sum": {
+                            "$cond": [{"$gt": ["$total_outstandings", 0]}, 1, 0]
+                        }
+                    },
+                    "outstanding_suppliers_count": {
+                        "$sum": {
+                            "$cond": [{"$gt": ["$total_outstandings", 0]}, 1, 0]
+                        }
+                    },
                 }
             }
         ]
@@ -76,6 +98,8 @@ class SupplierRepo(AnalyticsBaseRepo):
                         "total_suppliers": tot.get("total_suppliers", 0),
                         "total_outstandings": float(tot.get("total_outstandings", 0.0)),
                         "total_cleared_amounts": float(tot.get("total_cleared_amounts", 0.0)),
+                        "total_outstanding_suppliers": int(tot.get("total_outstanding_suppliers", 0)),
+                        "outstanding_suppliers_count": int(tot.get("outstanding_suppliers_count", 0)),
                         "timestamp": datetime.utcnow(),
                     }
                 },
@@ -90,6 +114,8 @@ class SupplierRepo(AnalyticsBaseRepo):
                         "total_suppliers": 0,
                         "total_outstandings": 0.0,
                         "total_cleared_amounts": 0.0,
+                        "total_outstanding_suppliers": 0,
+                        "outstanding_suppliers_count": 0,
                         "timestamp": datetime.utcnow(),
                     }
                 },
@@ -123,19 +149,33 @@ class SupplierRepo(AnalyticsBaseRepo):
         if supplier_id:
             doc = await self.breakdown.find_one({"shop_id": shop_id, "supplier_id": supplier_id}, {"_id": 0})
             if doc:
+                out_amt = float(doc.get("total_outstandings", 0.0))
                 return {
                     "shop_id": shop_id,
                     "total_suppliers": 1,
-                    "total_outstandings": float(doc.get("total_outstandings", 0.0)),
+                    "total_outstandings": out_amt,
                     "total_cleared_amounts": float(doc.get("total_cleared_amounts", 0.0)),
+                    "total_outstanding_suppliers": 1 if out_amt > 0 else 0,
+                    "outstanding_suppliers_count": 1 if out_amt > 0 else 0,
                 }
             return {
                 "shop_id": shop_id,
                 "total_suppliers": 0,
                 "total_outstandings": 0.0,
                 "total_cleared_amounts": 0.0,
+                "total_outstanding_suppliers": 0,
+                "outstanding_suppliers_count": 0,
             }
-        return await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+        doc = await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+        if doc and "total_outstanding_suppliers" not in doc:
+            out_count = await self.breakdown.count_documents({"shop_id": shop_id, "total_outstandings": {"$gt": 0}})
+            doc["total_outstanding_suppliers"] = out_count
+            doc["outstanding_suppliers_count"] = out_count
+            await self.overall.update_one(
+                {"shop_id": shop_id},
+                {"$set": {"total_outstanding_suppliers": out_count, "outstanding_suppliers_count": out_count}}
+            )
+        return doc
 
     async def get_supplier(self, shop_id: str, supplier_id: str):
         return await self.breakdown.find_one(
@@ -155,13 +195,14 @@ class SupplierRepo(AnalyticsBaseRepo):
         end_date: Optional[datetime] = None,
     ):
         filters = {"shop_id": shop_id}
-
-        if start_date or end_date:
+        parsed_start = _parse_datetime(start_date)
+        parsed_end = _parse_datetime(end_date)
+        if parsed_start or parsed_end:
             filters["timestamp"] = {}
-            if start_date:
-                filters["timestamp"]["$gte"] = start_date
-            if end_date:
-                filters["timestamp"]["$lte"] = end_date
+            if parsed_start:
+                filters["timestamp"]["$gte"] = parsed_start
+            if parsed_end:
+                filters["timestamp"]["$lte"] = parsed_end
 
         return await self.paginate_query(
             filters=filters,
@@ -186,12 +227,14 @@ class SupplierRepo(AnalyticsBaseRepo):
         end_date: Optional[datetime] = None,
     ):
         filters = {"shop_id": shop_id}
-        if start_date or end_date:
+        parsed_start = _parse_datetime(start_date)
+        parsed_end = _parse_datetime(end_date)
+        if parsed_start or parsed_end:
             filters["timestamp"] = {}
-            if start_date:
-                filters["timestamp"]["$gte"] = start_date
-            if end_date:
-                filters["timestamp"]["$lte"] = end_date
+            if parsed_start:
+                filters["timestamp"]["$gte"] = parsed_start
+            if parsed_end:
+                filters["timestamp"]["$lte"] = parsed_end
 
         return await self.aggregate([
             {"$match": filters},

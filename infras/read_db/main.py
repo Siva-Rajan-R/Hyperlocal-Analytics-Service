@@ -40,6 +40,7 @@ ANALYTICS_COLLECTIONS = {
 
     "sales": {
         "overall": READ_DATABASE["SalesOverallAnalytics"],
+        "breakdown": READ_DATABASE["SalesBreakdownAnalytics"],
         "daily": READ_DATABASE["SalesDailyAnalytics"],
     },
 }

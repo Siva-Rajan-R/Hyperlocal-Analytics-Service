@@ -36,8 +36,14 @@ async def process_sales_event(
 @router.get("/overall")
 async def get_sales_overall(
     shop_id: str,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
 ):
-    return await SalesRepo().get_overall(shop_id)
+    return await SalesRepo().get_overall(
+        shop_id=shop_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
 
 @router.get("/daily")
@@ -69,8 +75,14 @@ async def sales_trend(
 @router.get("/dashboard")
 async def sales_dashboard(
     shop_id: str,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
 ):
-    return await SalesRepo().dashboard(shop_id)
+    return await SalesRepo().dashboard(
+        shop_id=shop_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
 
 # ---------------------------------------------------------

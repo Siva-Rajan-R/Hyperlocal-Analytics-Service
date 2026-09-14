@@ -71,8 +71,14 @@ async def stock_adjustment_trend(
 @router.get("/dashboard")
 async def stock_adjustment_dashboard(
     shop_id: str,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
 ):
-    return await StockMovAdjRepo().dashboard(shop_id)
+    return await StockMovAdjRepo().dashboard(
+        shop_id=shop_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
 
 # ---------------------------------------------------------

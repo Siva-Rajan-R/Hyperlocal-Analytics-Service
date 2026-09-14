@@ -1,9 +1,10 @@
 import os
 import json
 import uuid
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, Query, Header, HTTPException
+from fastapi import APIRouter, Query, Header, HTTPException, status
 from arq import create_pool
 from arq.connections import RedisSettings
 import redis.asyncio as aioredis
@@ -31,77 +32,47 @@ async def sync_shop_data(
         "user_id": target_user_id
     }
 
-    try:
-        from background_worker import sync_analytics_task
-        # Launch background execution directly in asyncio loop
-        asyncio.create_task(sync_analytics_task(None, payload))
+    job_data = {
+        "job_id": job_id,
+        "shop_id": shop_id,
+        "user_id": target_user_id,
+        "status": "QUEUED",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
 
-        # Store initial status in Redis
+    # 1. Record initial QUEUED status in Redis
+    try:
         redis_client = aioredis.Redis.from_url(REDIS_URL, decode_responses=True)
-        job_data = {
-            "job_id": job_id,
-            "shop_id": shop_id,
-            "user_id": target_user_id,
-            "status": "QUEUED",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
         await redis_client.set(f"SYNC_JOB:{job_id}", json.dumps(job_data), ex=86400)
         await redis_client.set(f"SYNC_JOB:SHOP:{shop_id}", json.dumps(job_data), ex=86400)
         await redis_client.aclose()
+    except Exception as redis_err:
+        print(f"[Sync API] Warning: Failed to set initial Redis status: {redis_err}")
 
-        return {
-            "success": True,
-            "msg": "Analytics synchronization scheduled in background",
-            "job_id": job_id,
-            "status": "QUEUED",
-            "data": job_data
-        }
-    except Exception as e:
-        # Fallback to direct synchronous execution if ARQ/Redis enqueue fails
+    # 2. Enqueue in ARQ background worker queue
+    enqueued = False
+    try:
+        arq_pool = await create_pool(RedisSettings.from_dsn(REDIS_URL))
+        await arq_pool.enqueue_job("sync_analytics_task", payload, _queue_name="analytics_sync_queue")
+        await arq_pool.aclose()
+        enqueued = True
+        print(f"[Sync API] Enqueued ARQ task for shop {shop_id}, job {job_id}")
+    except Exception as arq_err:
+        print(f"[Sync API] ARQ pool enqueue failed, falling back to background asyncio task: {arq_err}")
         try:
-            res = await SyncService.sync_shop_data(shop_id=shop_id)
-            try:
-                await emit_notification(
-                    title="Analytics Sync Finished",
-                    message="Shop analytics data has been synchronized successfully.",
-                    type="success",
-                    user_id=target_user_id,
-                    target_type="particular" if target_user_id else "all",
-                    additional_metadata={
-                        "type": "analytics_sync",
-                        "shop_id": shop_id,
-                        "status": "COMPLETED",
-                        "job_id": job_id
-                    }
-                )
-            except Exception:
-                pass
+            from background_worker import sync_analytics_task
+            asyncio.create_task(sync_analytics_task(None, payload))
+            enqueued = True
+        except Exception as bg_err:
+            print(f"[Sync API] Background task creation failed: {bg_err}")
 
-            return {
-                "success": True,
-                "msg": "Analytics synchronization completed",
-                "job_id": job_id,
-                "status": "COMPLETED",
-                "data": res
-            }
-        except Exception as sync_err:
-            try:
-                await emit_notification(
-                    title="Analytics Sync Failed",
-                    message=f"Failed to synchronize analytics: {str(sync_err)}",
-                    type="error",
-                    user_id=target_user_id,
-                    target_type="particular" if target_user_id else "all",
-                    additional_metadata={
-                        "type": "analytics_sync",
-                        "shop_id": shop_id,
-                        "status": "FAILED",
-                        "job_id": job_id
-                    }
-                )
-            except Exception:
-                pass
-            raise HTTPException(status_code=500, detail=f"Sync failed: {str(sync_err)}")
+    return {
+        "success": True,
+        "msg": "Analytics synchronization scheduled in background",
+        "job_id": job_id,
+        "status": "QUEUED",
+        "data": job_data
+    }
 
 
 @router.get("/status/{job_id}")
