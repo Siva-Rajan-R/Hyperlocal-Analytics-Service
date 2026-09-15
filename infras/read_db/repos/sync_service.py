@@ -113,7 +113,7 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
             product_id=prod_id,
             variant_id=None,
             batch_id=None,
-            is_active=False,
+            is_active=is_active_prod,
             have_tracking=False,
             stocks=0.0,
             low_stocks=0.0,

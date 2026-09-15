@@ -150,6 +150,11 @@ class ProdInvRepo(AnalyticsBaseRepo):
         for item in payload.datas:
             if item.have_tracking is False:
                 non_tracking += 1
+                is_item_active = bool(item.is_active) if item.is_active is not None else True
+                if is_item_active:
+                    active += 1
+                else:
+                    inactive += 1
                 await self.breakdown.update_one(
                     {
                         "shop_id": payload.shop_id,
@@ -164,7 +169,7 @@ class ProdInvRepo(AnalyticsBaseRepo):
                             "variant_id": item.variant_id or "",
                             "batch_id": item.batch_id or "",
                             "have_tracking": False,
-                            "is_active": False,
+                            "is_active": is_item_active,
                             "stocks": 0.0,
                             "low_stocks": 0.0,
                             "no_stocks": 0.0,
@@ -188,7 +193,8 @@ class ProdInvRepo(AnalyticsBaseRepo):
 
             # Trackable products:
             item_stocks = float(item.stocks or 0.0)
-            if item_stocks > 0:
+            is_item_active = bool(item.is_active) if item.is_active is not None else True
+            if is_item_active:
                 active += 1
             else:
                 inactive += 1
@@ -211,7 +217,7 @@ class ProdInvRepo(AnalyticsBaseRepo):
                         "variant_id": item.variant_id or "",
                         "batch_id": item.batch_id or "",
                         "have_tracking": True,
-                        "is_active": item_stocks > 0,
+                        "is_active": is_item_active,
                         "stocks": item_stocks,
                         "low_stocks": float(item.low_stocks or 0.0),
                         "no_stocks": float(item.no_stocks or 0.0),
@@ -330,13 +336,17 @@ class ProdInvRepo(AnalyticsBaseRepo):
 
         for pid, units in products_map.items():
             is_non_tracking = any(u.get("have_tracking") is False for u in units)
+            is_prod_active = any(bool(u.get("is_active", True)) for u in units)
+
             if is_non_tracking:
                 non_tracking += 1
+                if not is_prod_active:
+                    inactive += 1
+                else:
+                    active += 1
                 continue
 
-            is_prod_active = any(bool(u.get("is_active")) for u in units)
             prod_stock = sum(float(u.get("stocks") or 0.0) for u in units)
-
             total_stock += prod_stock
 
             if is_prod_active:
