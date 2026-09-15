@@ -87,6 +87,8 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
                 type=item.type,
             )
 
+        increments = round(float(increments), 2)
+        decrements = round(float(decrements), 2)
         update = {
             "$inc": {
                 "total_stockmovadj": total,
@@ -115,8 +117,8 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
                 {
                     "$inc": {
                         "total_stockmovadj": stats["total"],
-                        "total_stockmovadj_increments": stats["increments"],
-                        "total_stockmovadj_decrements": stats["decrements"],
+                        "total_stockmovadj_increments": round(float(stats["increments"]), 2),
+                        "total_stockmovadj_decrements": round(float(stats["decrements"]), 2),
                     },
                     "$set": {
                         "shop_id": payload.shop_id,
@@ -129,10 +131,16 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
         return {"status": "success"}
 
     async def get_overall(self, shop_id: str):
-        return await self.overall.find_one(
+        res = await self.overall.find_one(
             {"shop_id": shop_id},
             {"_id": 0},
         )
+        if res:
+            if "total_stockmovadj_increments" in res and res["total_stockmovadj_increments"] is not None:
+                res["total_stockmovadj_increments"] = round(float(res["total_stockmovadj_increments"]), 2)
+            if "total_stockmovadj_decrements" in res and res["total_stockmovadj_decrements"] is not None:
+                res["total_stockmovadj_decrements"] = round(float(res["total_stockmovadj_decrements"]), 2)
+        return res
 
     async def daily_history(
         self,
