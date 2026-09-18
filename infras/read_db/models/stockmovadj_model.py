@@ -8,3 +8,5 @@ class StockMovAdjOverallAnalytics(BaseModel):
     total_stockmovadj:int
     total_stockmovadj_increments:float
     total_stockmovadj_decrements:float
+    total_stockmovadj_increments_count:Optional[int] = 0
+    total_stockmovadj_decrements_count:Optional[int] = 0

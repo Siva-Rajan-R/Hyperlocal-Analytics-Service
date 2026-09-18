@@ -105,7 +105,7 @@ def _extract_product_analytics_items(p: dict) -> List[ProdInvAnalyticsDatas]:
     created_at = str(p.get("created_at") or "")
     
     # Check actual product is_active status
-    is_active_prod = bool(p.get("is_active", True) if p.get("is_active") is not None else (p.get("status", "ACTIVE") == "ACTIVE"))
+    is_active_prod = bool(p.get("is_active", False) if p.get("is_active") is not None else (p.get("status", "") == "ACTIVE"))
 
     # Non-tracking products are separated from stock/active metrics
     if not have_tracking:

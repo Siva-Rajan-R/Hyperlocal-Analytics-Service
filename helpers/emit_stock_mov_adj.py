@@ -157,7 +157,7 @@ async def emit_stock_mov_adj(session: AsyncSession, data: List[dict]) -> bool:
                 if entity_id_val:
                     break
 
-    desc_entity = entity_name.replace("_", " ") if entity_name else "ADJUSTMENT"
+    desc_entity = entity_name.replace("_", " ").lower().replace("offline ", "").strip() if entity_name else "adjustment"
     if entity_id_val:
         desc_str = f"Stock adjusted via {desc_entity} ({entity_id_val})"
     else:

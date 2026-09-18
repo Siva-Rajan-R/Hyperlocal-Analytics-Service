@@ -151,10 +151,6 @@ class ProdInvRepo(AnalyticsBaseRepo):
             if item.have_tracking is False:
                 non_tracking += 1
                 is_item_active = bool(item.is_active) if item.is_active is not None else True
-                if is_item_active:
-                    active += 1
-                else:
-                    inactive += 1
                 await self.breakdown.update_one(
                     {
                         "shop_id": payload.shop_id,
@@ -336,14 +332,10 @@ class ProdInvRepo(AnalyticsBaseRepo):
 
         for pid, units in products_map.items():
             is_non_tracking = any(u.get("have_tracking") is False for u in units)
-            is_prod_active = any(bool(u.get("is_active", True)) for u in units)
+            is_prod_active = any(bool(u.get("is_active", False)) for u in units)
 
             if is_non_tracking:
                 non_tracking += 1
-                if not is_prod_active:
-                    inactive += 1
-                else:
-                    active += 1
                 continue
 
             prod_stock = sum(float(u.get("stocks") or 0.0) for u in units)

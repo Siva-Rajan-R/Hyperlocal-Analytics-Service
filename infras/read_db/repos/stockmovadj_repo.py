@@ -45,6 +45,8 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
     async def process_event(self, payload: StockMovAdjAnalyticsSchema):
         increments = 0.0
         decrements = 0.0
+        increments_count = 0
+        decrements_count = 0
         total = 0
 
         daily_groups = {}
@@ -60,8 +62,10 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
 
             if is_inc:
                 increments += qty
+                increments_count += 1
             else:
                 decrements += qty
+                decrements_count += 1
 
             d = _extract_date_str(getattr(item, "created_at", None))
             if d not in daily_groups:
@@ -69,13 +73,17 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
                     "total": 0,
                     "increments": 0.0,
                     "decrements": 0.0,
+                    "increments_count": 0,
+                    "decrements_count": 0,
                     "latest_created": getattr(item, "created_at", None)
                 }
             daily_groups[d]["total"] += 1
             if is_inc:
                 daily_groups[d]["increments"] += qty
+                daily_groups[d]["increments_count"] += 1
             else:
                 daily_groups[d]["decrements"] += qty
+                daily_groups[d]["decrements_count"] += 1
 
             from .prod_inv_repo import prod_inv_repo
             await prod_inv_repo.apply_stockmovadj(
@@ -94,6 +102,8 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
                 "total_stockmovadj": total,
                 "total_stockmovadj_increments": increments,
                 "total_stockmovadj_decrements": decrements,
+                "total_stockmovadj_increments_count": increments_count,
+                "total_stockmovadj_decrements_count": decrements_count,
             },
             "$set": {
                 "shop_id": payload.shop_id,
@@ -119,6 +129,8 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
                         "total_stockmovadj": stats["total"],
                         "total_stockmovadj_increments": round(float(stats["increments"]), 2),
                         "total_stockmovadj_decrements": round(float(stats["decrements"]), 2),
+                        "total_stockmovadj_increments_count": stats["increments_count"],
+                        "total_stockmovadj_decrements_count": stats["decrements_count"],
                     },
                     "$set": {
                         "shop_id": payload.shop_id,
@@ -140,6 +152,22 @@ class StockMovAdjRepo(AnalyticsBaseRepo):
                 res["total_stockmovadj_increments"] = round(float(res["total_stockmovadj_increments"]), 2)
             if "total_stockmovadj_decrements" in res and res["total_stockmovadj_decrements"] is not None:
                 res["total_stockmovadj_decrements"] = round(float(res["total_stockmovadj_decrements"]), 2)
+            
+            if "total_stockmovadj_increments_count" not in res or res["total_stockmovadj_increments_count"] is None:
+                daily_agg = await self.daily.aggregate([
+                    {"$match": {"shop_id": shop_id}},
+                    {"$group": {
+                        "_id": None,
+                        "inc_cnt": {"$sum": "$total_stockmovadj_increments_count"},
+                        "dec_cnt": {"$sum": "$total_stockmovadj_decrements_count"}
+                    }}
+                ]).to_list(length=1)
+                if daily_agg and (daily_agg[0].get("inc_cnt", 0) > 0 or daily_agg[0].get("dec_cnt", 0) > 0):
+                    res["total_stockmovadj_increments_count"] = daily_agg[0].get("inc_cnt", 0)
+                    res["total_stockmovadj_decrements_count"] = daily_agg[0].get("dec_cnt", 0)
+                else:
+                    res["total_stockmovadj_increments_count"] = 0
+                    res["total_stockmovadj_decrements_count"] = 0
         return res
 
     async def daily_history(
