@@ -128,14 +128,56 @@ async def emit_stock_mov_adj(session: AsyncSession, data: List[dict]) -> bool:
                 stock_before = current_physical + stocks_adjusted
                 stock_after = current_physical
 
+            item_entity_name = val.get('entity_name') or val.get('type_name') or entity_name
+            item_entity_id = (
+                val.get('purchase_ui_id') or
+                val.get('order_ui_id') or
+                val.get('sale_ui_id') or
+                val.get('return_ui_id') or
+                val.get('exchange_ui_id') or
+                val.get('sale_return_ui_id') or
+                val.get('offline_sale_ui_id') or
+                val.get('replacement_ui_id') or
+                val.get('entity_id')
+            )
+            if not item_entity_id:
+                for d in data:
+                    if isinstance(d, dict):
+                        item_entity_id = (
+                            d.get('purchase_ui_id') or
+                            d.get('order_ui_id') or
+                            d.get('sale_ui_id') or
+                            d.get('return_ui_id') or
+                            d.get('exchange_ui_id') or
+                            d.get('sale_return_ui_id') or
+                            d.get('offline_sale_ui_id') or
+                            d.get('replacement_ui_id') or
+                            d.get('entity_id')
+                        )
+                        if item_entity_id:
+                            break
+
+            if item_entity_name == "OPENING_STOCK":
+                item_desc = f"Opening stock initialized ({item_entity_id})" if item_entity_id else "Opening stock initialized"
+            else:
+                desc_entity = item_entity_name.replace("_", " ").lower() if item_entity_name else "adjustment"
+                desc_entity = desc_entity.replace("offline ", "").replace("online ", "").strip()
+                if update_type == "INCREMENT":
+                    action_text = "Stock increase"
+                elif update_type == "DECREMENT":
+                    action_text = "Stock decrease"
+                else:
+                    action_text = "Stock adjusted"
+                item_desc = f"{action_text} via {desc_entity} ({item_entity_id})" if item_entity_id else f"{action_text} via {desc_entity}"
+
             stock_mov_adj_items.append({
                 'product_id': product_id,
                 'name': product_name,
                 'ui_id': ui_id,
-                'category_id':category_infos['id'],
-                'category_name':category_infos['name'],
-                'unit_id':unit_infos['id'],
-                'unit_name':unit_infos['name'],
+                'category_id': category_id,
+                'category_name': category_name,
+                'unit_id': unit_id,
+                'unit_name': unit_name,
                 'variant_id': variant_id,
                 'variant_name': variant_name,
                 'batch_id': batch_infos.get('id') if batch_infos else None,
@@ -144,6 +186,11 @@ async def emit_stock_mov_adj(session: AsyncSession, data: List[dict]) -> bool:
                 'mfg_date': batch_infos.get('manufacturing_date') if batch_infos else None,
                 'serial_numbers': [sn['name'] for sn in val.get('serial_numbers')] if val.get('serial_numbers') else None,
                 'type': update_type,
+                'entity_name': item_entity_name,
+                'entity_id': item_entity_id,
+                'order_ui_id': item_entity_id,
+                'sale_ui_id': item_entity_id,
+                'description': item_desc,
                 'stocks_before': stock_before,
                 'stocks_after': stock_after,
                 'stocks': stocks_adjusted
@@ -153,9 +200,32 @@ async def emit_stock_mov_adj(session: AsyncSession, data: List[dict]) -> bool:
     if data:
         for d in data:
             if isinstance(d, dict):
-                entity_id_val = d.get('purchase_ui_id') or d.get('order_ui_id') or d.get('ui_id') or d.get('entity_id') or d.get('invoice_no')
+                entity_id_val = (
+                    d.get('purchase_ui_id') or
+                    d.get('order_ui_id') or
+                    d.get('sale_ui_id') or
+                    d.get('return_ui_id') or
+                    d.get('exchange_ui_id') or
+                    d.get('sale_return_ui_id') or
+                    d.get('offline_sale_ui_id') or
+                    d.get('replacement_ui_id') or
+                    d.get('entity_id') or
+                    d.get('invoice_no')
+                )
                 if entity_id_val:
                     break
+
+        if not entity_id_val:
+            for d in data:
+                if isinstance(d, dict):
+                    entity_id_val = (
+                        d.get('order_id') or
+                        d.get('sale_id') or
+                        d.get('return_id') or
+                        d.get('purchase_id')
+                    )
+                    if entity_id_val:
+                        break
 
     desc_entity = entity_name.replace("_", " ").lower().replace("offline ", "").strip() if entity_name else "adjustment"
     if entity_id_val:
@@ -171,6 +241,10 @@ async def emit_stock_mov_adj(session: AsyncSession, data: List[dict]) -> bool:
         'type': mov_type,
         'date': adj_date.isoformat(),
         'description': desc_str,
+        'entity_id': entity_id_val,
+        'order_ui_id': entity_id_val,
+        'sale_ui_id': entity_id_val,
+        'entity_name': mov_type,
         'items': stock_mov_adj_items
     }
 

@@ -470,13 +470,13 @@ class SyncService:
                             for ret in returns:
                                 if not isinstance(ret, dict):
                                     continue
-                                r_items = ret.get("items") or []
+                                r_items = ret.get("items") or ret.get("returned_items") or []
                                 if isinstance(r_items, list):
                                     for r_item in r_items:
                                         if not isinstance(r_item, dict):
                                             continue
-                                        oi_id = r_item.get("order_item_id")
-                                        returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or 0.0)
+                                        oi_id = r_item.get("order_item_id") or r_item.get("id")
+                                        returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or r_item.get("qty") or 0.0)
                         
                         exchanged_qty_map = {}
                         exchanges = o.get("exchanges") or []
@@ -484,13 +484,13 @@ class SyncService:
                             for exc in exchanges:
                                 if not isinstance(exc, dict):
                                     continue
-                                old_items = exc.get("old_items") or []
+                                old_items = exc.get("items") or exc.get("old_items") or exc.get("exchange_items") or []
                                 if isinstance(old_items, list):
                                     for e_old in old_items:
                                         if not isinstance(e_old, dict):
                                             continue
-                                        oi_id = e_old.get("order_item_id")
-                                        exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or 0.0)
+                                        oi_id = e_old.get("order_item_id") or e_old.get("id")
+                                        exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or e_old.get("qty") or 0.0)
                                 
                         all_items = []
                         items_raw = o.get("items") or []
@@ -500,7 +500,7 @@ class SyncService:
                             for exc in exchanges:
                                 if not isinstance(exc, dict):
                                     continue
-                                repl_items = exc.get("replaced_items") or []
+                                repl_items = exc.get("replaced_items") or exc.get("replacement_items") or exc.get("new_items") or []
                                 if isinstance(repl_items, list):
                                     all_items.extend([it for it in repl_items if isinstance(it, dict)])
 
@@ -508,8 +508,10 @@ class SyncService:
                             if not isinstance(item, dict):
                                 continue
                             oi_id = item.get("id") or item.get("order_item_id") or ""
-                            gross_qty = float(item.get("quantity") or item.get("stocks") or 0.0)
-                            net_qty = max(0.0, gross_qty - returned_qty_map.get(oi_id, 0.0) - exchanged_qty_map.get(oi_id, 0.0))
+                            gross_qty = float(item.get("quantity") or item.get("quantity_in_base") or item.get("stocks") or 0.0)
+                            ret_qty = max(returned_qty_map.get(oi_id, 0.0), float(item.get("returned_quantity") or 0.0))
+                            exc_qty = max(exchanged_qty_map.get(oi_id, 0.0), float(item.get("exchanged_quantity") or 0.0))
+                            net_qty = max(0.0, gross_qty - ret_qty - exc_qty)
                             
                             # Resolve true sell price (check calculation_infos.items for base unit price)
                             calc_items = (o.get("calculation_infos") or {}).get("items") or []
@@ -538,8 +540,8 @@ class SyncService:
                                 sales_id=o.get("id") or "",
                                 customer_id=cust_id,
                                 product_id=item.get("product_id") or item.get("inventory_id") or "",
-                                variant_id=item.get("variant_id"),
-                                batch_id=item.get("batch_id"),
+                                variant_id=item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None),
+                                batch_id=item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None),
                                 stocks=net_qty,
                                 sales_amounts=sales_amounts,
                                 cost_amounts=cost_amounts,
@@ -826,12 +828,12 @@ class SyncService:
                 if isinstance(returns, list):
                     for ret in returns:
                         if not isinstance(ret, dict): continue
-                        r_items = ret.get("items") or []
+                        r_items = ret.get("items") or ret.get("returned_items") or []
                         if isinstance(r_items, list):
                             for r_item in r_items:
                                 if not isinstance(r_item, dict): continue
-                                oi_id = r_item.get("order_item_id")
-                                returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or 0.0)
+                                oi_id = r_item.get("order_item_id") or r_item.get("id")
+                                returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or r_item.get("qty") or 0.0)
                 
                 # Precompute exchanges per order_item_id
                 exchanged_qty_map = {}
@@ -839,21 +841,32 @@ class SyncService:
                 if isinstance(exchanges, list):
                     for exc in exchanges:
                         if not isinstance(exc, dict): continue
-                        old_items = exc.get("old_items") or []
+                        old_items = exc.get("items") or exc.get("old_items") or exc.get("exchange_items") or []
                         if isinstance(old_items, list):
                             for e_old in old_items:
                                 if not isinstance(e_old, dict): continue
-                                oi_id = e_old.get("order_item_id")
-                                exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or 0.0)
+                                oi_id = e_old.get("order_item_id") or e_old.get("id")
+                                exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or e_old.get("qty") or 0.0)
 
                 datas = []
+                all_items = []
                 items_raw = o.get("items") or []
-                order_items = [it for it in items_raw if isinstance(it, dict)] if isinstance(items_raw, list) else []
-                for item in order_items:
+                if isinstance(items_raw, list):
+                    all_items.extend([it for it in items_raw if isinstance(it, dict)])
+                if isinstance(exchanges, list):
+                    for exc in exchanges:
+                        if not isinstance(exc, dict): continue
+                        repl_items = exc.get("replaced_items") or exc.get("replacement_items") or exc.get("new_items") or []
+                        if isinstance(repl_items, list):
+                            all_items.extend([it for it in repl_items if isinstance(it, dict)])
+
+                for item in all_items:
+                    if not isinstance(item, dict):
+                        continue
                     oi_id = item.get("id") or item.get("order_item_id") or ""
-                    gross_qty = float(item.get("quantity") or item.get("stocks") or 0.0)
-                    ret_qty = returned_qty_map.get(oi_id, 0.0)
-                    exc_qty = exchanged_qty_map.get(oi_id, 0.0)
+                    gross_qty = float(item.get("quantity") or item.get("quantity_in_base") or item.get("stocks") or 0.0)
+                    ret_qty = max(returned_qty_map.get(oi_id, 0.0), float(item.get("returned_quantity") or 0.0))
+                    exc_qty = max(exchanged_qty_map.get(oi_id, 0.0), float(item.get("exchanged_quantity") or 0.0))
                     net_qty = max(0.0, gross_qty - ret_qty - exc_qty)
                     
                     # Resolve true sell price (check calculation_infos.items for base unit price)
@@ -874,12 +887,17 @@ class SyncService:
                     cost_amounts = net_qty * buy_price
                     profit_amounts = sales_amounts - cost_amounts
 
+                    cust_id = o.get("customer_id")
+                    if not isinstance(cust_id, str):
+                        cust_obj = o.get("customer")
+                        cust_id = cust_obj.get("customer_id") or cust_obj.get("id") if isinstance(cust_obj, dict) else None
+
                     datas.append(SalesAnalyticsDatas(
                         sales_id=o.get("id") or "",
-                        customer_id=o.get("customer_id"),
-                        product_id=item.get("product_id") or "",
-                        variant_id=item.get("variant_id"),
-                        batch_id=item.get("batch_id"),
+                        customer_id=cust_id,
+                        product_id=item.get("product_id") or item.get("inventory_id") or "",
+                        variant_id=item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None),
+                        batch_id=item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None),
                         stocks=net_qty,
                         sales_amounts=sales_amounts,
                         cost_amounts=cost_amounts,
@@ -887,31 +905,6 @@ class SyncService:
                         sales_type=o.get("origin") or "OFFLINE",
                         created_at=o_date
                     ))
-                
-                # Also process new items from exchanges as new sales
-                for exc in o.get("exchanges", []):
-                    for e_new in exc.get("new_items", []):
-                        gross_qty = float(e_new.get("quantity") or e_new.get("stocks") or 0.0)
-                        sell_price = float(e_new.get("sell_price") or e_new.get("price") or 0.0)
-                        buy_price = float(e_new.get("buy_price") or 0.0)
-                        
-                        sales_amounts = gross_qty * sell_price
-                        cost_amounts = gross_qty * buy_price
-                        profit_amounts = sales_amounts - cost_amounts
-
-                        datas.append(SalesAnalyticsDatas(
-                            sales_id=o.get("id") or "",
-                            customer_id=o.get("customer_id"),
-                            product_id=e_new.get("product_id") or "",
-                            variant_id=e_new.get("variant_id"),
-                            batch_id=e_new.get("batch_id"),
-                            stocks=gross_qty,
-                            sales_amounts=sales_amounts,
-                            cost_amounts=cost_amounts,
-                            profit_amounts=profit_amounts,
-                            sales_type=o.get("origin") or "OFFLINE",
-                            created_at=o_date
-                        ))
 
                 if datas:
                     payload = SalesAnalyticsSchema(shop_id=shop_id, datas=datas)
