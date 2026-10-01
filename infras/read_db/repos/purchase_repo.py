@@ -236,10 +236,35 @@ class PurchaseRepo(AnalyticsBaseRepo):
             }
         ]
         res = await self.breakdown.aggregate(pipeline).to_list(1)
-        if res:
+        if res and float(res[0].get("total_purchase_amounts", 0.0) or 0.0) > 0.0:
             res[0].pop("_id", None)
             res[0]["shop_id"] = shop_id
             return res[0]
+
+        # Fallback: check Supplier breakdown/overall for purchase amounts
+        try:
+            from .supplier_repo import supplier_repo
+            sup_overall = await supplier_repo.get_overall(shop_id, supplier_id=supplier_id) or {}
+            top_sups = await supplier_repo.top_suppliers(shop_id, limit=100, supplier_id=supplier_id) or []
+            s_pur_amt = sum(float(s.get("total_purchase_amounts", 0.0) or s.get("total_cleared_amounts", 0.0) or 0.0) for s in top_sups)
+            s_pur_cnt = sum(int(s.get("total_purchases", 0) or 0) for s in top_sups)
+            s_out_amt = sum(float(s.get("total_outstandings", 0.0) or 0.0) for s in top_sups)
+            if s_pur_amt == 0.0:
+                s_pur_amt = float(sup_overall.get("total_cleared_amounts", 0.0) or 0.0) + float(sup_overall.get("total_outstandings", 0.0) or 0.0)
+                s_out_amt = float(sup_overall.get("total_outstandings", 0.0) or 0.0)
+                if s_pur_amt > 0:
+                    s_pur_cnt = 1
+            if s_pur_amt > 0 or s_pur_cnt > 0:
+                return {
+                    "shop_id": shop_id,
+                    "total_purchase": max(1, s_pur_cnt),
+                    "total_purchase_amounts": s_pur_amt,
+                    "total_purchase_stocks": 0.0,
+                    "total_outstanding_amounts": s_out_amt,
+                }
+        except Exception:
+            pass
+
         return {
             "shop_id": shop_id,
             "total_purchase": 0,
@@ -315,7 +340,30 @@ class PurchaseRepo(AnalyticsBaseRepo):
                 },
                 {"$sort": {"_id": 1}},
             ])
-        return await cursor.to_list(length=None)
+        trend_res = await cursor.to_list(length=None)
+        if trend_res:
+            return trend_res
+
+        # Fallback to supplier trend if purchase trend is empty
+        try:
+            from .supplier_repo import supplier_repo
+            sup_trend = await supplier_repo.supplier_trend(shop_id, start_date, end_date)
+            if sup_trend:
+                return [
+                    {
+                        "_id": st.get("_id") or st.get("date") or datetime.utcnow().strftime("%Y-%m-%d"),
+                        "total_purchase": int(st.get("total_purchases", 1) or 1),
+                        "total_purchase_amounts": float(st.get("total_cleared_amounts", 0.0) or st.get("total_purchase_amounts", 0.0) or 0.0),
+                        "total_outstanding_amounts": float(st.get("total_outstandings", 0.0) or 0.0),
+                        "total_purchase_stocks": 0.0
+                    }
+                    for st in sup_trend
+                    if float(st.get("total_cleared_amounts", 0.0) or st.get("total_purchase_amounts", 0.0) or 0.0) > 0
+                ]
+        except Exception:
+            pass
+
+        return []
 
     async def dashboard(
         self,

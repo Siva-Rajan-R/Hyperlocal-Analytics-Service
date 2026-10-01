@@ -27,6 +27,131 @@ INVENTORY_SERVICE_URL = os.getenv("INVENTORY_SERVICE_URL", "http://127.0.0.1:800
 PURCHASE_SERVICE_URL = os.getenv("PURCHASE_SERVICE_URL", "http://127.0.0.1:8003")
 ORDER_SERVICE_URL = os.getenv("ORDER_SERVICE_URL", "http://127.0.0.1:8007")
 STOCKMOVADJ_SERVICE_URL = os.getenv("STOCKMOVADJ_SERVICE_URL", "http://127.0.0.1:8005")
+SHOPEMP_SERVICE_URL = os.getenv("SHOPEMP_SERVICE_URL", "http://127.0.0.1:8001")
+
+
+async def _get_shop_gst_registered(client: httpx.AsyncClient, shop_id: str) -> bool:
+    try:
+        from infras.read_db.main import MONGO_CLIENT
+        shops_collection = MONGO_CLIENT["ShopEmpDb"]["ShopsCollection"]
+        doc = await shops_collection.find_one({"id": shop_id}, {"business_infos": 1, "business_info": 1, "_id": 0})
+        if not doc:
+            doc = await shops_collection.find_one({"_id": shop_id}, {"business_infos": 1, "business_info": 1})
+        if doc:
+            biz = doc.get("business_infos") or doc.get("business_info") or {}
+            gst_info = biz.get("gst_infos") or biz.get("gst_info") or {}
+            return bool(gst_info.get("registered"))
+    except Exception as e:
+        ic(f"Error checking shop GST via Mongo: {e}")
+
+    try:
+        resp = await client.get(f"{SHOPEMP_SERVICE_URL}/shops/by/{shop_id}")
+        if resp.status_code == 200:
+            data = resp.json()
+            shop_data = data.get("data") if isinstance(data, dict) and "data" in data else data
+            if isinstance(shop_data, dict):
+                biz = shop_data.get("business_infos") or shop_data.get("business_info") or {}
+                gst_info = biz.get("gst_infos") or biz.get("gst_info") or {}
+                return bool(gst_info.get("registered"))
+    except Exception as e:
+        ic(f"Error checking shop GST via HTTP: {e}")
+
+    return False
+
+
+def _extract_landed_costs_from_purchases(purchases: list, is_gst_registered: bool) -> dict:
+    cost_map = {}
+    for p in purchases:
+        if not isinstance(p, dict):
+            continue
+        if str(p.get("status", "")).upper() in ("CANCELED", "CANCELLED", "DRAFT"):
+            continue
+
+        calc_infos = p.get("calculations") or p.get("calculation_infos") or {}
+        distribute_by = str(calc_infos.get("distribute_by") or "BY_VALUE").upper()
+
+        charges = p.get("charges_infos") or p.get("charges") or {}
+        total_charges = float(charges.get("transport_charge") or 0.0) + float(charges.get("other_charge") or 0.0)
+
+        gst_infos = p.get("gst_infos") or {}
+        gst_type = str(gst_infos.get("type") or calc_infos.get("gst_type") or "EXCLUSIVE").upper()
+
+        items = p.get("items") or []
+        if not isinstance(items, list):
+            continue
+
+        total_qty = 0.0
+        total_subtotal = 0.0
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            stocks_info = it.get("stocks_infos") or {}
+            pricing_info = it.get("pricing_infos") or {}
+            q = float(stocks_info.get("stocks") or it.get("stocks") or it.get("quantity") or 0.0)
+            bp = float(pricing_info.get("buy_price") or it.get("buy_price") or 0.0)
+            total_qty += q
+            total_subtotal += q * bp
+
+        num_items = len(items) if items else 1
+
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            stocks_info = it.get("stocks_infos") or {}
+            pricing_info = it.get("pricing_infos") or {}
+            var_info = it.get("variant_infos") or {}
+            bat_info = it.get("batch_infos") or {}
+
+            gross_qty = float(stocks_info.get("stocks") or it.get("stocks") or it.get("quantity") or 0.0)
+            base_buy_price = float(pricing_info.get("buy_price") or it.get("buy_price") or 0.0)
+            if base_buy_price <= 0 and gross_qty > 0:
+                base_buy_price = float(it.get("total_amount") or 0.0) / gross_qty
+
+            allocated_per_unit = 0.0
+            if total_charges > 0:
+                if "UNIT" in distribute_by and total_qty > 0:
+                    allocated_per_unit = total_charges / total_qty
+                elif "EQUAL" in distribute_by and num_items > 0:
+                    allocated_per_unit = (total_charges / num_items) / (gross_qty if gross_qty > 0 else 1.0)
+                elif total_subtotal > 0:
+                    allocated_per_unit = (base_buy_price / total_subtotal) * total_charges
+                elif total_qty > 0:
+                    allocated_per_unit = total_charges / total_qty
+
+            item_gst = it.get("gst") or "0%"
+            gst_rate = 0.0
+            if item_gst and str(item_gst).endswith("%"):
+                try:
+                    gst_rate = float(str(item_gst)[:-1]) / 100.0
+                except ValueError:
+                    gst_rate = 0.0
+
+            if gst_type == "INCLUSIVE":
+                row_base = base_buy_price / (1.0 + gst_rate) if gst_rate > 0 else base_buy_price
+                gst_per_unit = base_buy_price - row_base
+            else:
+                row_base = base_buy_price
+                gst_per_unit = base_buy_price * gst_rate
+
+            if is_gst_registered:
+                landed_cost_unit = row_base + allocated_per_unit
+            else:
+                landed_cost_unit = row_base + gst_per_unit + allocated_per_unit
+
+            p_id = it.get("product_id") or it.get("inventory_id")
+            v_id = var_info.get("id") or it.get("variant_id")
+            b_id = bat_info.get("id") or it.get("batch_id")
+
+            if p_id:
+                if v_id and b_id:
+                    cost_map[(p_id, v_id, b_id)] = landed_cost_unit
+                if b_id:
+                    cost_map[(p_id, b_id)] = landed_cost_unit
+                if v_id:
+                    cost_map[(p_id, v_id)] = landed_cost_unit
+                cost_map[p_id] = landed_cost_unit
+
+    return cost_map
 
 async def _fetch_all_pages(client: httpx.AsyncClient, base_url: str) -> tuple[list, int]:
     all_items = []
@@ -455,6 +580,10 @@ class SyncService:
         # 6. Fetch and sync Sales (Orders)
         try:
             async with httpx.AsyncClient() as client:
+                # Compute landed costs per product/variant/batch from purchases
+                is_gst_reg = await _get_shop_gst_registered(client, shop_id)
+                landed_cost_map = _extract_landed_costs_from_purchases(valid_purchases if 'valid_purchases' in locals() else [], is_gst_reg)
+
                 orders, status_code = await _fetch_all_pages(client, f"{ORDER_SERVICE_URL}/orders/{shop_id}")
                 if status_code == 200:
                     datas = []
@@ -525,10 +654,21 @@ class SyncService:
                                         break
 
                             sell_price = calc_item_price if (calc_item_price is not None and calc_item_price > 0) else float(item.get("sell_price") or item.get("price") or 0.0)
-                            buy_price = float(item.get("buy_price") or 0.0)
+                            
+                            p_id = item.get("product_id") or item.get("inventory_id") or ""
+                            v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
+                            b_id = item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None)
+
+                            unit_landed_cost = (
+                                landed_cost_map.get((p_id, v_id, b_id))
+                                or landed_cost_map.get((p_id, b_id))
+                                or landed_cost_map.get((p_id, v_id))
+                                or landed_cost_map.get(p_id)
+                                or float(item.get("buy_price") or 0.0)
+                            )
                             
                             sales_amounts = net_qty * sell_price
-                            cost_amounts = net_qty * buy_price
+                            cost_amounts = net_qty * unit_landed_cost
                             profit_amounts = sales_amounts - cost_amounts
                             
                             cust_id = o.get("customer_id")
@@ -539,9 +679,9 @@ class SyncService:
                             datas.append(SalesAnalyticsDatas(
                                 sales_id=o.get("id") or "",
                                 customer_id=cust_id,
-                                product_id=item.get("product_id") or item.get("inventory_id") or "",
-                                variant_id=item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None),
-                                batch_id=item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None),
+                                product_id=p_id,
+                                variant_id=v_id,
+                                batch_id=b_id,
                                 stocks=net_qty,
                                 sales_amounts=sales_amounts,
                                 cost_amounts=cost_amounts,
@@ -848,6 +988,11 @@ class SyncService:
                                 oi_id = e_old.get("order_item_id") or e_old.get("id")
                                 exchanged_qty_map[oi_id] = exchanged_qty_map.get(oi_id, 0.0) + float(e_old.get("quantity") or e_old.get("qty") or 0.0)
 
+                # Fetch purchases and compute landed cost map
+                is_gst_reg = await _get_shop_gst_registered(client, shop_id)
+                purchases, _ = await _fetch_all_pages(client, f"{PURCHASE_SERVICE_URL}/purchases/by/shop/{shop_id}")
+                landed_cost_map = _extract_landed_costs_from_purchases(purchases or [], is_gst_reg)
+
                 datas = []
                 all_items = []
                 items_raw = o.get("items") or []
@@ -881,10 +1026,21 @@ class SyncService:
                                 break
 
                     sell_price = calc_item_price if (calc_item_price is not None and calc_item_price > 0) else float(item.get("sell_price") or item.get("price") or 0.0)
-                    buy_price = float(item.get("buy_price") or 0.0)
                     
+                    p_id = item.get("product_id") or item.get("inventory_id") or ""
+                    v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
+                    b_id = item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None)
+
+                    unit_landed_cost = (
+                        landed_cost_map.get((p_id, v_id, b_id))
+                        or landed_cost_map.get((p_id, b_id))
+                        or landed_cost_map.get((p_id, v_id))
+                        or landed_cost_map.get(p_id)
+                        or float(item.get("buy_price") or 0.0)
+                    )
+
                     sales_amounts = net_qty * sell_price
-                    cost_amounts = net_qty * buy_price
+                    cost_amounts = net_qty * unit_landed_cost
                     profit_amounts = sales_amounts - cost_amounts
 
                     cust_id = o.get("customer_id")
@@ -895,9 +1051,9 @@ class SyncService:
                     datas.append(SalesAnalyticsDatas(
                         sales_id=o.get("id") or "",
                         customer_id=cust_id,
-                        product_id=item.get("product_id") or item.get("inventory_id") or "",
-                        variant_id=item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None),
-                        batch_id=item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None),
+                        product_id=p_id,
+                        variant_id=v_id,
+                        batch_id=b_id,
                         stocks=net_qty,
                         sales_amounts=sales_amounts,
                         cost_amounts=cost_amounts,
