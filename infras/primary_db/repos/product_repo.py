@@ -1155,22 +1155,17 @@ class ProductRepo:
 
 
     async def get_bulk_products_by_id(self,data:GetBulkProductsById):
-        stmt = (
-            select(Products)
-            .where(Products.shop_id==data.shop_id,Products.id.in_(data.id))
-            .options(
-                selectinload(Products.variants).load_only(*self.variant_cols),
+        stmt = select(Products).where(Products.id.in_(data.id))
+        if data.shop_id:
+            stmt = stmt.where(Products.shop_id == data.shop_id)
 
-                selectinload(Products.batches).load_only(*self.batch_cols),
-
-                selectinload(Products.stocks).load_only(*self.inventory_stocks_cols),
-
-                selectinload(Products.pricings).load_only(*self.invetory_pricing_cols),
-
-                selectinload(Products.storage_locations).load_only(*self.inventory_stl_cols),
-
-                selectinload(Products.reorder_points).load_only(*self.inventory_rop_cols),
-            )
+        stmt = stmt.options(
+            selectinload(Products.variants).load_only(*self.variant_cols),
+            selectinload(Products.batches).load_only(*self.batch_cols),
+            selectinload(Products.stocks).load_only(*self.inventory_stocks_cols),
+            selectinload(Products.pricings).load_only(*self.invetory_pricing_cols),
+            selectinload(Products.storage_locations).load_only(*self.inventory_stl_cols),
+            selectinload(Products.reorder_points).load_only(*self.inventory_rop_cols),
         )
 
         if data.include_serialno:
