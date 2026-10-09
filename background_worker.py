@@ -9,8 +9,20 @@ from arq.connections import RedisSettings
 import redis.asyncio as aioredis
 from infras.read_db.repos.sync_service import SyncService
 
+from urllib.parse import urlparse, unquote
+
 REDIS_URL = os.getenv("PLATFORM_REDIS_URL") or "redis://localhost:6379"
-redis_settings = RedisSettings.from_dsn(REDIS_URL)
+
+def _get_redis_settings(dsn: str) -> RedisSettings:
+    parsed = urlparse(dsn)
+    return RedisSettings(
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 6379,
+        password=unquote(parsed.password) if parsed.password else None,
+        database=int(parsed.path.lstrip("/")) if parsed.path and parsed.path.lstrip("/").isdigit() else 0,
+    )
+
+redis_settings = _get_redis_settings(REDIS_URL)
 
 async def sync_analytics_task(ctx, payload: dict):
     shop_id = payload.get("shop_id")

@@ -133,10 +133,8 @@ def _extract_landed_costs_from_purchases(purchases: list, is_gst_registered: boo
                 row_base = base_buy_price
                 gst_per_unit = base_buy_price * gst_rate
 
-            if is_gst_registered:
-                landed_cost_unit = row_base + allocated_per_unit
-            else:
-                landed_cost_unit = row_base + gst_per_unit + allocated_per_unit
+            # Landed cost represents true procurement outlay per unit = base price + GST + allocated shipping/other charges
+            landed_cost_unit = row_base + gst_per_unit + allocated_per_unit
 
             p_id = it.get("product_id") or it.get("inventory_id")
             v_id = var_info.get("id") or it.get("variant_id")
@@ -642,18 +640,34 @@ class SyncService:
                             exc_qty = max(exchanged_qty_map.get(oi_id, 0.0), float(item.get("exchanged_quantity") or 0.0))
                             net_qty = max(0.0, gross_qty - ret_qty - exc_qty)
                             
-                            # Resolve true sell price (check calculation_infos.items for base unit price)
+                            # Resolve true net sell price per unit including item, line, and bill discounts
                             calc_items = (o.get("calculation_infos") or {}).get("items") or []
                             calc_item_price = None
                             for ci in calc_items:
                                 if isinstance(ci, dict):
                                     ci_pid = ci.get("product_id") or ci.get("inventory_id")
                                     it_pid = item.get("product_id") or item.get("inventory_id")
-                                    if (ci_pid and ci_pid == it_pid) or (ci.get("name") and ci.get("name") == item.get("name")):
-                                        calc_item_price = float(ci.get("price") or 0.0)
+                                    ci_oid = ci.get("order_item_id") or ci.get("id")
+                                    if (ci_oid and ci_oid == oi_id) or (ci_pid and ci_pid == it_pid) or (ci.get("name") and ci.get("name") == item.get("name")):
+                                        ci_qty = float(ci.get('qty') or ci.get('quantity') or gross_qty or 1.0)
+                                        disc = float(ci.get('product_discount_amount') or 0.0) + float(ci.get('line_discount_amount') or 0.0) + float(ci.get('bill_discount_share') or 0.0) + float(ci.get('discount_amount') or 0.0)
+                                        if ci.get('final_amount') is not None and ci_qty > 0:
+                                            calc_item_price = float(ci['final_amount']) / ci_qty
+                                        elif ci.get('final_inclusive') is not None and ci_qty > 0:
+                                            calc_item_price = float(ci['final_inclusive']) / ci_qty
+                                        elif ci.get('net_price') is not None:
+                                            calc_item_price = float(ci['net_price'])
+                                        elif ci.get('price') is not None:
+                                            orig_sp = float(ci['price'])
+                                            calc_item_price = max(0.0, (orig_sp * ci_qty - disc) / ci_qty) if ci_qty > 0 else orig_sp
                                         break
 
-                            sell_price = calc_item_price if (calc_item_price is not None and calc_item_price > 0) else float(item.get("sell_price") or item.get("price") or 0.0)
+                            if calc_item_price is not None and calc_item_price > 0:
+                                sell_price = calc_item_price
+                            elif item.get("total_amount") is not None and float(item.get("total_amount") or 0.0) > 0 and gross_qty > 0:
+                                sell_price = float(item.get("total_amount")) / gross_qty
+                            else:
+                                sell_price = float(item.get("sell_price") or item.get("price") or 0.0)
                             
                             p_id = item.get("product_id") or item.get("inventory_id") or ""
                             v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
@@ -1014,18 +1028,34 @@ class SyncService:
                     exc_qty = max(exchanged_qty_map.get(oi_id, 0.0), float(item.get("exchanged_quantity") or 0.0))
                     net_qty = max(0.0, gross_qty - ret_qty - exc_qty)
                     
-                    # Resolve true sell price (check calculation_infos.items for base unit price)
+                    # Resolve true net sell price per unit including item, line, and bill discounts
                     calc_items = (o.get("calculation_infos") or {}).get("items") or []
                     calc_item_price = None
                     for ci in calc_items:
                         if isinstance(ci, dict):
                             ci_pid = ci.get("product_id") or ci.get("inventory_id")
                             it_pid = item.get("product_id") or item.get("inventory_id")
-                            if (ci_pid and ci_pid == it_pid) or (ci.get("name") and ci.get("name") == item.get("name")):
-                                calc_item_price = float(ci.get("price") or 0.0)
+                            ci_oid = ci.get("order_item_id") or ci.get("id")
+                            if (ci_oid and ci_oid == oi_id) or (ci_pid and ci_pid == it_pid) or (ci.get("name") and ci.get("name") == item.get("name")):
+                                ci_qty = float(ci.get('qty') or ci.get('quantity') or gross_qty or 1.0)
+                                disc = float(ci.get('product_discount_amount') or 0.0) + float(ci.get('line_discount_amount') or 0.0) + float(ci.get('bill_discount_share') or 0.0) + float(ci.get('discount_amount') or 0.0)
+                                if ci.get('final_amount') is not None and ci_qty > 0:
+                                    calc_item_price = float(ci['final_amount']) / ci_qty
+                                elif ci.get('final_inclusive') is not None and ci_qty > 0:
+                                    calc_item_price = float(ci['final_inclusive']) / ci_qty
+                                elif ci.get('net_price') is not None:
+                                    calc_item_price = float(ci['net_price'])
+                                elif ci.get('price') is not None:
+                                    orig_sp = float(ci['price'])
+                                    calc_item_price = max(0.0, (orig_sp * ci_qty - disc) / ci_qty) if ci_qty > 0 else orig_sp
                                 break
 
-                    sell_price = calc_item_price if (calc_item_price is not None and calc_item_price > 0) else float(item.get("sell_price") or item.get("price") or 0.0)
+                    if calc_item_price is not None and calc_item_price > 0:
+                        sell_price = calc_item_price
+                    elif item.get("total_amount") is not None and float(item.get("total_amount") or 0.0) > 0 and gross_qty > 0:
+                        sell_price = float(item.get("total_amount")) / gross_qty
+                    else:
+                        sell_price = float(item.get("sell_price") or item.get("price") or 0.0)
                     
                     p_id = item.get("product_id") or item.get("inventory_id") or ""
                     v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
