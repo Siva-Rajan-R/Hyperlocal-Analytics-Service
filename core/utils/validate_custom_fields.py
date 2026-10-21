@@ -17,6 +17,12 @@ def validate_and_filter_custom_fields(payload_custom_fields: Dict, defined_custo
 
     # Check for required fields
     for field_name, field_def in defined_fields_map.items():
+        field_type = str(field_def.get('type') or field_def.get('field_type') or '').strip().lower()
+        if field_type == 'boolean':
+            if field_name not in payload_custom_fields or payload_custom_fields[field_name] is None or str(payload_custom_fields[field_name]).strip() == "":
+                payload_custom_fields[field_name] = False
+            continue
+
         if field_def.get('required') and field_name not in payload_custom_fields:
             raise HTTPException(
                 status_code=400,
