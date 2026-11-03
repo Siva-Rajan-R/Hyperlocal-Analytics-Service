@@ -1,6 +1,6 @@
 import os
 import httpx
-from typing import List, Dict, Any
+from typing import List, Dict, Optional,Any
 
 def ic(*args):
     if args:
@@ -32,8 +32,8 @@ SHOPEMP_SERVICE_URL = os.getenv("SHOPEMP_SERVICE_URL", "http://127.0.0.1:8001")
 
 async def _get_shop_gst_registered(client: httpx.AsyncClient, shop_id: str) -> bool:
     try:
-        from infras.read_db.main import MONGO_CLIENT
-        shops_collection = MONGO_CLIENT["ShopEmpDb"]["ShopsCollection"]
+        from infras.read_db.main import CLIENT
+        shops_collection = CLIENT["ShopEmpDb"]["ShopsCollection"]
         doc = await shops_collection.find_one({"id": shop_id}, {"business_infos": 1, "business_info": 1, "_id": 0})
         if not doc:
             doc = await shops_collection.find_one({"_id": shop_id}, {"business_infos": 1, "business_info": 1})
@@ -150,6 +150,130 @@ def _extract_landed_costs_from_purchases(purchases: list, is_gst_registered: boo
                 cost_map[p_id] = landed_cost_unit
 
     return cost_map
+
+
+def _extract_actual_sell_price(
+    item: dict,
+    order_doc: dict,
+    matched_ci: Optional[dict],
+    gross_qty: float,
+    calc_item_price: Optional[float],
+    is_gst_reg: bool = False,
+) -> float:
+    """
+    Extracts the net taxable selling price (excluding GST) for revenue and profit calculations.
+    For GST-registered sellers with inclusive pricing (e.g. SP 100 with 5% GST):
+    - The split is 95 Rs actual selling price and 5 Rs GST amount.
+    - Revenue and profit calculations are performed using the 95 Rs base, not 100 Rs.
+    """
+    # 1. Determine inclusive / line unit price after discounts
+    if calc_item_price is not None and calc_item_price > 0:
+        inclusive_unit_price = calc_item_price
+    elif item.get("total_amount") is not None and float(item.get("total_amount") or 0.0) > 0 and gross_qty > 0:
+        inclusive_unit_price = float(item.get("total_amount")) / gross_qty
+    else:
+        inclusive_unit_price = float(item.get("sell_price") or item.get("price") or 0.0)
+
+    # 2. Check if net taxable value is directly provided in calculation_infos.items or item
+    if matched_ci and matched_ci.get("taxable_value") is not None:
+        ci_qty = float(matched_ci.get("qty") or matched_ci.get("quantity") or gross_qty or 1.0)
+        return float(matched_ci["taxable_value"]) / ci_qty if ci_qty > 0 else float(matched_ci["taxable_value"])
+
+    if item.get("taxable_price") is not None and float(item.get("taxable_price") or 0.0) > 0:
+        return float(item["taxable_price"])
+
+    # 3. Derive taxable amount by extracting inclusive GST
+    calc_infos = order_doc.get("calculation_infos") or {}
+    include_gst = calc_infos.get("include_gst")
+    order_gst_amt = float(calc_infos.get("gst_amount") or 0.0)
+
+    raw_gst = (
+        (matched_ci.get("gst_rate") if matched_ci else None)
+        or (matched_ci.get("gst") if matched_ci else None)
+        or item.get("gst")
+        or "0"
+    )
+    gst_clean = str(raw_gst).replace("%", "").strip()
+    try:
+        gst_pct = float(gst_clean)
+    except Exception:
+        gst_pct = 0.0
+
+    is_gst_applicable = (include_gst is True) or (order_gst_amt > 0) or (include_gst is not False and is_gst_reg and gst_pct > 0)
+
+    if is_gst_applicable and gst_pct > 0:
+        taxable_val = inclusive_unit_price / (1.0 + (gst_pct / 100.0))
+        return max(0.0, round(taxable_val, 2))
+
+    return inclusive_unit_price
+
+
+def _normalize_payment_method_name(val: str) -> str:
+    if not val:
+        return "Cash"
+    u = str(val).strip().upper()
+    if u in ("CASH",):
+        return "Cash"
+    if u in ("CARD", "DEBIT_CARD", "CREDIT_CARD", "DEBIT CARD", "CREDIT CARD", "POS"):
+        return "Card"
+    if u in ("UPI", "GPAY", "G-PAY", "PHONEPE", "PAYTM", "BHIM", "QR"):
+        return "UPI"
+    if "BANK" in u or u in ("NEFT", "RTGS", "IMPS", "NETBANKING", "NET_BANKING"):
+        return "Bank Transfer"
+    if "CREDIT" in u:
+        return "Credit"
+    return "Cash"
+
+def _extract_order_payment_info(o: dict) -> tuple[str, dict, float, float]:
+    calc_info = o.get("calculation_infos") or {}
+    total_bill = float(
+        calc_info.get("grand_total")
+        or calc_info.get("total")
+        or (o.get("item_infos") or {}).get("total_order_amount")
+        or o.get("total_sellprice")
+        or o.get("total_amount")
+        or o.get("total")
+        or 0.0
+    )
+    if total_bill <= 0.0:
+        items = o.get("items") or []
+        if isinstance(items, list):
+            total_bill = sum(float(it.get("total_amount") or (float(it.get("sell_price") or 0.0) * float(it.get("quantity") or 1.0))) for it in items if isinstance(it, dict))
+
+    payments_map = {}
+    p_infos = o.get("payment_infos") or o.get("payments") or {}
+    if isinstance(p_infos, dict) and p_infos:
+        for k, v in p_infos.items():
+            if not k: continue
+            amt = float(v.get("amount") or 0.0) if isinstance(v, dict) else float(v or 0.0)
+            norm = _normalize_payment_method_name(k)
+            payments_map[norm] = payments_map.get(norm, 0.0) + amt
+    elif isinstance(p_infos, list) and p_infos:
+        for p in p_infos:
+            if isinstance(p, dict):
+                m = p.get("method") or p.get("payment_method") or p.get("mode") or p.get("type") or ""
+                amt = float(p.get("amount") or 0.0)
+            elif isinstance(p, str):
+                m = p
+                amt = total_bill
+            else:
+                continue
+            norm = _normalize_payment_method_name(m)
+            payments_map[norm] = payments_map.get(norm, 0.0) + amt
+    elif o.get("payment_method") or o.get("payment_mode"):
+        pm = o.get("payment_method") or o.get("payment_mode")
+        norm = _normalize_payment_method_name(pm)
+        payments_map[norm] = total_bill
+
+    if not payments_map:
+        payments_map["Cash"] = total_bill
+
+    primary_pm = max(payments_map.keys(), key=lambda k: payments_map[k]) if payments_map else "Cash"
+    received = sum(amt for m, amt in payments_map.items() if m != "Credit")
+    if received <= 0.0 and primary_pm != "Credit":
+        received = total_bill
+
+    return primary_pm, payments_map, total_bill, received
 
 async def _fetch_all_pages(client: httpx.AsyncClient, base_url: str) -> tuple[list, int]:
     all_items = []
@@ -474,6 +598,7 @@ class SyncService:
             status["customers"] = f"Error syncing customers: {str(e)}"
 
         # 4. Fetch and sync Product/Inventory
+        prod_cost_map = {}
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 products, status_code = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/by/shop/{shop_id}")
@@ -482,6 +607,18 @@ class SyncService:
                     datas = []
                     for p in products:
                         datas.extend(_extract_product_analytics_items(p))
+                        if isinstance(p, dict) and p.get("id"):
+                            p_cost = float(
+                                p.get("cost_to_make")
+                                or p.get("buy_price")
+                                or (p.get("pricing_infos") or {}).get("cost_to_make")
+                                or (p.get("pricing_infos") or {}).get("buy_price")
+                                or (p.get("custom_fields") or {}).get("cost_to_make")
+                                or (p.get("custom_fields") or {}).get("buy_price")
+                                or 0.0
+                            )
+                            if p_cost > 0:
+                                prod_cost_map[p["id"]] = p_cost
                     if datas:
                         payload = ProdInvAnalyticsSchema(shop_id=shop_id, datas=datas)
                         await prod_inv_repo.process_inventory_sync(payload)
@@ -584,10 +721,14 @@ class SyncService:
 
                 orders, status_code = await _fetch_all_pages(client, f"{ORDER_SERVICE_URL}/orders/{shop_id}")
                 if status_code == 200:
+                    await sales_repo.breakdown.delete_many({"shop_id": shop_id})
+                    await prod_inv_repo.reset_sales(shop_id)
+                    await customer_repo.reset_sales(shop_id)
+
+                    valid_orders = [o for o in orders if isinstance(o, dict) and str(o.get("status", "")).upper() not in ("CANCELLED", "CANCELED")]
                     datas = []
-                    for o in orders:
-                        if not isinstance(o, dict):
-                            continue
+                    for o in valid_orders:
+                        pm_method, pm_dict, bill_amt, recv_amt = _extract_order_payment_info(o)
                         o_date = str(o.get("created_at") or o.get("date") or "")
                         
                         # Precompute returns and exchanges
@@ -640,15 +781,18 @@ class SyncService:
                             exc_qty = max(exchanged_qty_map.get(oi_id, 0.0), float(item.get("exchanged_quantity") or 0.0))
                             net_qty = max(0.0, gross_qty - ret_qty - exc_qty)
                             
-                            # Resolve true net sell price per unit including item, line, and bill discounts
+                            # Resolve true net sell price per unit including item, line, and bill discounts,
+                            # and extract taxable base excluding inclusive GST for GST sellers
                             calc_items = (o.get("calculation_infos") or {}).get("items") or []
                             calc_item_price = None
+                            matched_ci = None
                             for ci in calc_items:
                                 if isinstance(ci, dict):
                                     ci_pid = ci.get("product_id") or ci.get("inventory_id")
                                     it_pid = item.get("product_id") or item.get("inventory_id")
                                     ci_oid = ci.get("order_item_id") or ci.get("id")
                                     if (ci_oid and ci_oid == oi_id) or (ci_pid and ci_pid == it_pid) or (ci.get("name") and ci.get("name") == item.get("name")):
+                                        matched_ci = ci
                                         ci_qty = float(ci.get('qty') or ci.get('quantity') or gross_qty or 1.0)
                                         disc = float(ci.get('product_discount_amount') or 0.0) + float(ci.get('line_discount_amount') or 0.0) + float(ci.get('bill_discount_share') or 0.0) + float(ci.get('discount_amount') or 0.0)
                                         if ci.get('final_amount') is not None and ci_qty > 0:
@@ -662,13 +806,14 @@ class SyncService:
                                             calc_item_price = max(0.0, (orig_sp * ci_qty - disc) / ci_qty) if ci_qty > 0 else orig_sp
                                         break
 
-                            if calc_item_price is not None and calc_item_price > 0:
-                                sell_price = calc_item_price
-                            elif item.get("total_amount") is not None and float(item.get("total_amount") or 0.0) > 0 and gross_qty > 0:
-                                sell_price = float(item.get("total_amount")) / gross_qty
-                            else:
-                                sell_price = float(item.get("sell_price") or item.get("price") or 0.0)
-                            
+                            sell_price = _extract_actual_sell_price(
+                                item=item,
+                                order_doc=o,
+                                matched_ci=matched_ci,
+                                gross_qty=gross_qty,
+                                calc_item_price=calc_item_price,
+                                is_gst_reg=is_gst_reg,
+                            )
                             p_id = item.get("product_id") or item.get("inventory_id") or ""
                             v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
                             b_id = item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None)
@@ -678,7 +823,19 @@ class SyncService:
                                 or landed_cost_map.get((p_id, b_id))
                                 or landed_cost_map.get((p_id, v_id))
                                 or landed_cost_map.get(p_id)
-                                or float(item.get("buy_price") or 0.0)
+                                or float(
+                                    item.get("buy_price")
+                                    or item.get("cost_to_make")
+                                    or (matched_ci.get("cost_at_sale") if matched_ci else 0.0)
+                                    or (matched_ci.get("cost_price") if matched_ci else 0.0)
+                                    or (matched_ci.get("buy_price") if matched_ci else 0.0)
+                                    or (item.get("pricing_infos") or {}).get("buy_price")
+                                    or (item.get("pricing_infos") or {}).get("cost_to_make")
+                                    or (item.get("custom_fields") or {}).get("buy_price")
+                                    or (item.get("custom_fields") or {}).get("cost_to_make")
+                                    or prod_cost_map.get(p_id, 0.0)
+                                    or 0.0
+                                )
                             )
                             
                             sales_amounts = net_qty * sell_price
@@ -701,6 +858,10 @@ class SyncService:
                                 cost_amounts=cost_amounts,
                                 profit_amounts=profit_amounts,
                                 sales_type=o.get("origin") or "OFFLINE",
+                                payment_method=pm_method,
+                                payments=pm_dict,
+                                bill_amount=bill_amt,
+                                received_amount=recv_amt,
                                 created_at=o_date
                             ))
                     if datas:
@@ -975,6 +1136,7 @@ class SyncService:
                     o = next((item for item in orders if item.get("id") == order_id), None)
             if o and isinstance(o, dict):
                 o_date = str(o.get("created_at") or o.get("date") or "")
+                pm_method, pm_dict, bill_amt, recv_amt = _extract_order_payment_info(o)
                 
                 # Precompute returns per order_item_id
                 returned_qty_map = {}
@@ -1028,15 +1190,18 @@ class SyncService:
                     exc_qty = max(exchanged_qty_map.get(oi_id, 0.0), float(item.get("exchanged_quantity") or 0.0))
                     net_qty = max(0.0, gross_qty - ret_qty - exc_qty)
                     
-                    # Resolve true net sell price per unit including item, line, and bill discounts
+                    # Resolve true net sell price per unit including item, line, and bill discounts,
+                    # and extract taxable base excluding inclusive GST for GST sellers
                     calc_items = (o.get("calculation_infos") or {}).get("items") or []
                     calc_item_price = None
+                    matched_ci = None
                     for ci in calc_items:
                         if isinstance(ci, dict):
                             ci_pid = ci.get("product_id") or ci.get("inventory_id")
                             it_pid = item.get("product_id") or item.get("inventory_id")
                             ci_oid = ci.get("order_item_id") or ci.get("id")
                             if (ci_oid and ci_oid == oi_id) or (ci_pid and ci_pid == it_pid) or (ci.get("name") and ci.get("name") == item.get("name")):
+                                matched_ci = ci
                                 ci_qty = float(ci.get('qty') or ci.get('quantity') or gross_qty or 1.0)
                                 disc = float(ci.get('product_discount_amount') or 0.0) + float(ci.get('line_discount_amount') or 0.0) + float(ci.get('bill_discount_share') or 0.0) + float(ci.get('discount_amount') or 0.0)
                                 if ci.get('final_amount') is not None and ci_qty > 0:
@@ -1050,13 +1215,14 @@ class SyncService:
                                     calc_item_price = max(0.0, (orig_sp * ci_qty - disc) / ci_qty) if ci_qty > 0 else orig_sp
                                 break
 
-                    if calc_item_price is not None and calc_item_price > 0:
-                        sell_price = calc_item_price
-                    elif item.get("total_amount") is not None and float(item.get("total_amount") or 0.0) > 0 and gross_qty > 0:
-                        sell_price = float(item.get("total_amount")) / gross_qty
-                    else:
-                        sell_price = float(item.get("sell_price") or item.get("price") or 0.0)
-                    
+                    sell_price = _extract_actual_sell_price(
+                        item=item,
+                        order_doc=o,
+                        matched_ci=matched_ci,
+                        gross_qty=gross_qty,
+                        calc_item_price=calc_item_price,
+                        is_gst_reg=is_gst_reg,
+                    )
                     p_id = item.get("product_id") or item.get("inventory_id") or ""
                     v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
                     b_id = item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None)
@@ -1066,7 +1232,18 @@ class SyncService:
                         or landed_cost_map.get((p_id, b_id))
                         or landed_cost_map.get((p_id, v_id))
                         or landed_cost_map.get(p_id)
-                        or float(item.get("buy_price") or 0.0)
+                        or float(
+                            item.get("buy_price")
+                            or item.get("cost_to_make")
+                            or (matched_ci.get("cost_at_sale") if matched_ci else 0.0)
+                            or (matched_ci.get("cost_price") if matched_ci else 0.0)
+                            or (matched_ci.get("buy_price") if matched_ci else 0.0)
+                            or (item.get("pricing_infos") or {}).get("buy_price")
+                            or (item.get("pricing_infos") or {}).get("cost_to_make")
+                            or (item.get("custom_fields") or {}).get("buy_price")
+                            or (item.get("custom_fields") or {}).get("cost_to_make")
+                            or 0.0
+                        )
                     )
 
                     sales_amounts = net_qty * sell_price
@@ -1089,6 +1266,10 @@ class SyncService:
                         cost_amounts=cost_amounts,
                         profit_amounts=profit_amounts,
                         sales_type=o.get("origin") or "OFFLINE",
+                        payment_method=pm_method,
+                        payments=pm_dict,
+                        bill_amount=bill_amt,
+                        received_amount=recv_amt,
                         created_at=o_date
                     ))
 

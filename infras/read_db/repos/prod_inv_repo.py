@@ -431,6 +431,19 @@ class ProdInvRepo(AnalyticsBaseRepo):
             upsert=True,
         )
 
+    async def reset_sales(self, shop_id: str):
+        await self.breakdown.update_many(
+            {"shop_id": shop_id},
+            {
+                "$set": {
+                    "total_offline_sales": 0,
+                    "total_offline_sales_amount": 0.0,
+                    "total_online_sales": 0,
+                    "total_online_sales_amount": 0.0,
+                }
+            }
+        )
+
     async def apply_sale(
         self,
         shop_id: str,
@@ -442,13 +455,14 @@ class ProdInvRepo(AnalyticsBaseRepo):
         sales_type: str,
     ):
         is_online = (sales_type or "").upper() == "ONLINE"
+        qty = float(stocks or 1.0)
         
         inc_fields = {}
         if is_online:
-            inc_fields["total_online_sales"] = 1
+            inc_fields["total_online_sales"] = qty
             inc_fields["total_online_sales_amount"] = amount
         else:
-            inc_fields["total_offline_sales"] = 1
+            inc_fields["total_offline_sales"] = qty
             inc_fields["total_offline_sales_amount"] = amount
 
         await self.breakdown.update_one(

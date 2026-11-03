@@ -136,6 +136,21 @@ class CustomerRepo(AnalyticsBaseRepo):
             )
         return {"status": "success"}
 
+    async def reset_sales(self, shop_id: str):
+        await self.breakdown.update_many(
+            {"shop_id": shop_id},
+            {
+                "$set": {
+                    "total_sales": 0,
+                    "total_sales_amount": 0.0,
+                    "total_offline_sales": 0,
+                    "total_offline_sales_amount": 0.0,
+                    "total_online_sales": 0,
+                    "total_online_sales_amount": 0.0,
+                }
+            }
+        )
+
     async def apply_sale(
         self,
         shop_id: str,
