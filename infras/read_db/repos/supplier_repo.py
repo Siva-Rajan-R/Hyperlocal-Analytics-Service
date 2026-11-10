@@ -211,7 +211,10 @@ class SupplierRepo(AnalyticsBaseRepo):
         )
 
     async def top_suppliers(self, shop_id: str, limit: int = 10, supplier_id: Optional[str] = None):
-        filters = {"shop_id": shop_id}
+        filters: dict = {
+            "shop_id": shop_id,
+            "$or": [{"total_purchases": {"$gt": 0}}, {"total_purchase_amounts": {"$gt": 0}}]
+        }
         if supplier_id:
             filters["supplier_id"] = supplier_id
         cursor = self.breakdown.find(

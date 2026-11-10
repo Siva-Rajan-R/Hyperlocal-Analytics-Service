@@ -237,7 +237,7 @@ class CustomerRepo(AnalyticsBaseRepo):
                 sort_field = "total_offline_sales_amount"
 
         cursor = self.breakdown.find(
-            {"shop_id": shop_id},
+            {"shop_id": shop_id, sort_field: {"$gt": 0}},
             {"_id": 0}
         ).sort(sort_field, -1).limit(limit)
         return await cursor.to_list(length=None)

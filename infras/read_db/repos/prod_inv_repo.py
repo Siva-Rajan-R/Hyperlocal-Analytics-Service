@@ -574,7 +574,8 @@ class ProdInvRepo(AnalyticsBaseRepo):
                     }
                 }
             },
-            {"$sort": {"total_sales_amounts": -1}},
+            {"$match": {"$or": [{"total_sales_amounts": {"$gt": 0}}, {"total_sales_stocks": {"$gt": 0}}]}},
+            {"$sort": {"total_sales_stocks": -1, "total_sales_amounts": -1}},
             {"$limit": limit},
             {"$project": {"_id": 0}},
         ]

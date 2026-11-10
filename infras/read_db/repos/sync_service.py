@@ -34,13 +34,20 @@ async def _get_shop_gst_registered(client: httpx.AsyncClient, shop_id: str) -> b
     try:
         from infras.read_db.main import CLIENT
         shops_collection = CLIENT["ShopEmpDb"]["ShopsCollection"]
-        doc = await shops_collection.find_one({"id": shop_id}, {"business_infos": 1, "business_info": 1, "_id": 0})
+        doc = await shops_collection.find_one({"id": shop_id}, {"business_infos": 1, "business_info": 1, "gstin": 1, "gst_number": 1, "_id": 0})
         if not doc:
-            doc = await shops_collection.find_one({"_id": shop_id}, {"business_infos": 1, "business_info": 1})
+            doc = await shops_collection.find_one({"_id": shop_id}, {"business_infos": 1, "business_info": 1, "gstin": 1, "gst_number": 1})
         if doc:
             biz = doc.get("business_infos") or doc.get("business_info") or {}
             gst_info = biz.get("gst_infos") or biz.get("gst_info") or {}
-            return bool(gst_info.get("registered"))
+            return bool(
+                gst_info.get("registered") or
+                gst_info.get("number") or
+                biz.get("gstin") or
+                biz.get("gst_number") or
+                doc.get("gstin") or
+                doc.get("gst_number")
+            )
     except Exception as e:
         ic(f"Error checking shop GST via Mongo: {e}")
 
@@ -52,11 +59,18 @@ async def _get_shop_gst_registered(client: httpx.AsyncClient, shop_id: str) -> b
             if isinstance(shop_data, dict):
                 biz = shop_data.get("business_infos") or shop_data.get("business_info") or {}
                 gst_info = biz.get("gst_infos") or biz.get("gst_info") or {}
-                return bool(gst_info.get("registered"))
+                return bool(
+                    gst_info.get("registered") or
+                    gst_info.get("number") or
+                    biz.get("gstin") or
+                    biz.get("gst_number") or
+                    shop_data.get("gstin") or
+                    shop_data.get("gst_number")
+                )
     except Exception as e:
         ic(f"Error checking shop GST via HTTP: {e}")
 
-    return False
+    return True
 
 
 def _extract_landed_costs_from_purchases(purchases: list, is_gst_registered: bool) -> dict:
@@ -159,12 +173,13 @@ def _extract_actual_sell_price(
     gross_qty: float,
     calc_item_price: Optional[float],
     is_gst_reg: bool = False,
+    prod_gst_map: Optional[dict] = None,
 ) -> float:
     """
     Extracts the net taxable selling price (excluding GST) for revenue and profit calculations.
-    For GST-registered sellers with inclusive pricing (e.g. SP 100 with 5% GST):
-    - The split is 95 Rs actual selling price and 5 Rs GST amount.
-    - Revenue and profit calculations are performed using the 95 Rs base, not 100 Rs.
+    For GST-registered sellers with inclusive pricing:
+    - E.g. SP 100 with 18% GST: GST amount is 18 Rs, taxable base is 82 Rs.
+    - Revenue and profit calculations are performed using the 82 Rs base, not 100 Rs.
     """
     # 1. Determine inclusive / line unit price after discounts
     if calc_item_price is not None and calc_item_price > 0:
@@ -174,23 +189,13 @@ def _extract_actual_sell_price(
     else:
         inclusive_unit_price = float(item.get("sell_price") or item.get("price") or 0.0)
 
-    # 2. Check if net taxable value is directly provided in calculation_infos.items or item
-    if matched_ci and matched_ci.get("taxable_value") is not None:
-        ci_qty = float(matched_ci.get("qty") or matched_ci.get("quantity") or gross_qty or 1.0)
-        return float(matched_ci["taxable_value"]) / ci_qty if ci_qty > 0 else float(matched_ci["taxable_value"])
-
-    if item.get("taxable_price") is not None and float(item.get("taxable_price") or 0.0) > 0:
-        return float(item["taxable_price"])
-
-    # 3. Derive taxable amount by extracting inclusive GST
-    calc_infos = order_doc.get("calculation_infos") or {}
-    include_gst = calc_infos.get("include_gst")
-    order_gst_amt = float(calc_infos.get("gst_amount") or 0.0)
-
+    # 2. Extract GST percentage
+    p_id = item.get("product_id") or item.get("inventory_id") or ""
     raw_gst = (
         (matched_ci.get("gst_rate") if matched_ci else None)
         or (matched_ci.get("gst") if matched_ci else None)
         or item.get("gst")
+        or (prod_gst_map.get(p_id) if prod_gst_map else None)
         or "0"
     )
     gst_clean = str(raw_gst).replace("%", "").strip()
@@ -199,11 +204,33 @@ def _extract_actual_sell_price(
     except Exception:
         gst_pct = 0.0
 
-    is_gst_applicable = (include_gst is True) or (order_gst_amt > 0) or (include_gst is not False and is_gst_reg and gst_pct > 0)
+    if gst_pct <= 0 and prod_gst_map and p_id and p_id in prod_gst_map:
+        prod_raw = prod_gst_map[p_id]
+        gst_clean = str(prod_raw).replace("%", "").strip()
+        try:
+            gst_pct = float(gst_clean)
+        except Exception:
+            gst_pct = 0.0
 
+    calc_infos = order_doc.get("calculation_infos") or {}
+    include_gst = calc_infos.get("include_gst")
+    order_gst_amt = float(calc_infos.get("gst_amount") or 0.0)
+
+    is_gst_applicable = (include_gst is True) or (order_gst_amt > 0) or (include_gst is not False and is_gst_reg and gst_pct > 0) or (gst_pct > 0)
+
+    # 3. If GST is applicable, calculate net taxable value (SP - GST)
     if is_gst_applicable and gst_pct > 0:
-        taxable_val = inclusive_unit_price / (1.0 + (gst_pct / 100.0))
-        return max(0.0, round(taxable_val, 2))
+        gst_amount = round(inclusive_unit_price * (gst_pct / 100.0), 2)
+        taxable_val = round(inclusive_unit_price - gst_amount, 2)
+        return max(0.0, taxable_val)
+
+    # 4. Fallback if GST is 0%: check if net taxable value is directly provided
+    if matched_ci and matched_ci.get("taxable_value") is not None:
+        ci_qty = float(matched_ci.get("qty") or matched_ci.get("quantity") or gross_qty or 1.0)
+        return float(matched_ci["taxable_value"]) / ci_qty if ci_qty > 0 else float(matched_ci["taxable_value"])
+
+    if item.get("taxable_price") is not None and float(item.get("taxable_price") or 0.0) > 0:
+        return float(item["taxable_price"])
 
     return inclusive_unit_price
 
@@ -599,6 +626,7 @@ class SyncService:
 
         # 4. Fetch and sync Product/Inventory
         prod_cost_map = {}
+        prod_gst_map = {}
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 products, status_code = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/by/shop/{shop_id}")
@@ -619,6 +647,9 @@ class SyncService:
                             )
                             if p_cost > 0:
                                 prod_cost_map[p["id"]] = p_cost
+                            p_gst = p.get("gst") or p.get("gst_rate") or p.get("tax_rate") or (p.get("pricing_infos") or {}).get("gst") or (p.get("classification") or {}).get("gst")
+                            if p_gst:
+                                prod_gst_map[p["id"]] = p_gst
                     if datas:
                         payload = ProdInvAnalyticsSchema(shop_id=shop_id, datas=datas)
                         await prod_inv_repo.process_inventory_sync(payload)
@@ -813,6 +844,7 @@ class SyncService:
                                 gross_qty=gross_qty,
                                 calc_item_price=calc_item_price,
                                 is_gst_reg=is_gst_reg,
+                                prod_gst_map=prod_gst_map,
                             )
                             p_id = item.get("product_id") or item.get("inventory_id") or ""
                             v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
@@ -1169,6 +1201,15 @@ class SyncService:
                 purchases, _ = await _fetch_all_pages(client, f"{PURCHASE_SERVICE_URL}/purchases/by/shop/{shop_id}")
                 landed_cost_map = _extract_landed_costs_from_purchases(purchases or [], is_gst_reg)
 
+                # Fetch products for product GST map
+                products, _ = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/by/shop/{shop_id}")
+                prod_gst_map = {}
+                for p in (products or []):
+                    if isinstance(p, dict) and p.get("id"):
+                        p_gst = p.get("gst") or p.get("gst_rate") or p.get("tax_rate") or (p.get("pricing_infos") or {}).get("gst") or (p.get("classification") or {}).get("gst")
+                        if p_gst:
+                            prod_gst_map[p["id"]] = p_gst
+
                 datas = []
                 all_items = []
                 items_raw = o.get("items") or []
@@ -1222,6 +1263,7 @@ class SyncService:
                         gross_qty=gross_qty,
                         calc_item_price=calc_item_price,
                         is_gst_reg=is_gst_reg,
+                        prod_gst_map=prod_gst_map,
                     )
                     p_id = item.get("product_id") or item.get("inventory_id") or ""
                     v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
