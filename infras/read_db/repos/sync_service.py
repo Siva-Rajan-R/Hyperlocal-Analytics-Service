@@ -235,6 +235,148 @@ def _extract_actual_sell_price(
     return inclusive_unit_price
 
 
+def _parse_gst_pct(raw_gst) -> float:
+    try:
+        return float(str(raw_gst or "0").replace("%", "").strip())
+    except Exception:
+        return 0.0
+
+
+def _add_gst_to_cost(base_cost: float, gst_pct: float) -> float:
+    if base_cost > 0 and gst_pct > 0:
+        return round(base_cost + round(base_cost * (gst_pct / 100.0), 2), 2)
+    return base_cost
+
+
+def _first_positive_float(*vals) -> float:
+    for v in vals:
+        try:
+            f = float(v or 0.0)
+            if f > 0:
+                return f
+        except Exception:
+            continue
+    return 0.0
+
+
+def _build_product_cost_and_gst_maps(products: list) -> tuple[dict, dict, dict]:
+    """Build (prod_gst_map, prod_base_cost_map, prod_cost_with_gst_map) keyed by product id."""
+    prod_gst_map = {}
+    prod_base_cost_map = {}
+    prod_cost_with_gst_map = {}
+
+    for p in (products or []):
+        if not isinstance(p, dict) or not p.get("id"):
+            continue
+        pid = p["id"]
+
+        inv_units = p.get("inventory_units") or []
+        first_unit = inv_units[0] if isinstance(inv_units, list) and inv_units and isinstance(inv_units[0], dict) else {}
+        unit_pricing = first_unit.get("pricing_infos") or {}
+        top_pricing = p.get("pricing_infos") or {}
+        custom_fields = p.get("custom_fields") or {}
+        classification = p.get("classification") or {}
+
+        p_gst = (
+            p.get("gst")
+            or p.get("gst_rate")
+            or p.get("tax_rate")
+            or top_pricing.get("gst")
+            or unit_pricing.get("gst")
+            or classification.get("gst")
+        )
+        if p_gst:
+            prod_gst_map[pid] = p_gst
+
+        p_base_cost = _first_positive_float(
+            p.get("cost_to_make"),
+            p.get("buy_price"),
+            top_pricing.get("cost_to_make"),
+            top_pricing.get("buy_price"),
+            unit_pricing.get("cost_to_make"),
+            unit_pricing.get("buy_price"),
+            custom_fields.get("cost_to_make"),
+            custom_fields.get("buy_price"),
+        )
+        if p_base_cost > 0:
+            gst_pct = _parse_gst_pct(p_gst)
+            prod_base_cost_map[pid] = p_base_cost
+            prod_cost_with_gst_map[pid] = _add_gst_to_cost(p_base_cost, gst_pct)
+
+    return prod_gst_map, prod_base_cost_map, prod_cost_with_gst_map
+
+
+def _resolve_item_unit_cost(
+    item: dict,
+    order_doc: dict,
+    matched_ci: dict | None,
+    p_id: str,
+    v_id,
+    b_id,
+    landed_cost_map: dict,
+    prod_cost_with_gst_map: dict,
+    prod_base_cost_map: dict,
+    prod_gst_map: dict,
+) -> float:
+    """Resolve unit COGS for an order item, ensuring untracked/base costs include product GST."""
+    landed = (
+        landed_cost_map.get((p_id, v_id, b_id))
+        or landed_cost_map.get((p_id, b_id))
+        or landed_cost_map.get((p_id, v_id))
+        or landed_cost_map.get(p_id)
+    )
+    if landed and landed > 0:
+        return float(landed)
+
+    ci_cost = _first_positive_float(
+        matched_ci.get("cost_at_sale") if matched_ci else 0.0,
+        matched_ci.get("cost_price") if matched_ci else 0.0,
+    )
+    prod_gst_cost = float(prod_cost_with_gst_map.get(p_id) or 0.0)
+    item_pricing = item.get("pricing_infos") or {}
+    item_custom = item.get("custom_fields") or {}
+    item_cost = _first_positive_float(
+        item.get("cost_to_make"),
+        item.get("buy_price"),
+        item_pricing.get("cost_to_make"),
+        item_pricing.get("buy_price"),
+        item_custom.get("cost_to_make"),
+        item_custom.get("buy_price"),
+    )
+
+    raw_unit_cost = ci_cost or prod_gst_cost or item_cost
+    if raw_unit_cost <= 0:
+        return 0.0
+
+    calc_infos = order_doc.get("calculation_infos") or {}
+    if calc_infos.get("include_gst") is False:
+        return raw_unit_cost
+
+    p_gst_val = (
+        (matched_ci.get("gst_rate") if matched_ci else None)
+        or (matched_ci.get("gst") if matched_ci else None)
+        or item.get("gst")
+        or prod_gst_map.get(p_id)
+        or "0"
+    )
+    p_gst_pct = _parse_gst_pct(p_gst_val)
+    if p_gst_pct <= 0:
+        return raw_unit_cost
+
+    base_c = _first_positive_float(
+        prod_base_cost_map.get(p_id),
+        item.get("raw_buy_price"),
+        item.get("cost_to_make"),
+        item.get("buy_price"),
+        item_pricing.get("buy_price"),
+    )
+    if base_c > 0 and abs(raw_unit_cost - base_c) < 0.01:
+        return _add_gst_to_cost(base_c, p_gst_pct)
+
+    return raw_unit_cost
+
+
+
 def _normalize_payment_method_name(val: str) -> str:
     if not val:
         return "Cash"
@@ -626,6 +768,7 @@ class SyncService:
 
         # 4. Fetch and sync Product/Inventory
         prod_cost_map = {}
+        prod_base_cost_map = {}
         prod_gst_map = {}
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -635,21 +778,7 @@ class SyncService:
                     datas = []
                     for p in products:
                         datas.extend(_extract_product_analytics_items(p))
-                        if isinstance(p, dict) and p.get("id"):
-                            p_cost = float(
-                                p.get("cost_to_make")
-                                or p.get("buy_price")
-                                or (p.get("pricing_infos") or {}).get("cost_to_make")
-                                or (p.get("pricing_infos") or {}).get("buy_price")
-                                or (p.get("custom_fields") or {}).get("cost_to_make")
-                                or (p.get("custom_fields") or {}).get("buy_price")
-                                or 0.0
-                            )
-                            if p_cost > 0:
-                                prod_cost_map[p["id"]] = p_cost
-                            p_gst = p.get("gst") or p.get("gst_rate") or p.get("tax_rate") or (p.get("pricing_infos") or {}).get("gst") or (p.get("classification") or {}).get("gst")
-                            if p_gst:
-                                prod_gst_map[p["id"]] = p_gst
+                    prod_gst_map, prod_base_cost_map, prod_cost_map = _build_product_cost_and_gst_maps(products)
                     if datas:
                         payload = ProdInvAnalyticsSchema(shop_id=shop_id, datas=datas)
                         await prod_inv_repo.process_inventory_sync(payload)
@@ -850,24 +979,17 @@ class SyncService:
                             v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
                             b_id = item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None)
 
-                            unit_landed_cost = (
-                                landed_cost_map.get((p_id, v_id, b_id))
-                                or landed_cost_map.get((p_id, b_id))
-                                or landed_cost_map.get((p_id, v_id))
-                                or landed_cost_map.get(p_id)
-                                or float(
-                                    item.get("buy_price")
-                                    or item.get("cost_to_make")
-                                    or (matched_ci.get("cost_at_sale") if matched_ci else 0.0)
-                                    or (matched_ci.get("cost_price") if matched_ci else 0.0)
-                                    or (matched_ci.get("buy_price") if matched_ci else 0.0)
-                                    or (item.get("pricing_infos") or {}).get("buy_price")
-                                    or (item.get("pricing_infos") or {}).get("cost_to_make")
-                                    or (item.get("custom_fields") or {}).get("buy_price")
-                                    or (item.get("custom_fields") or {}).get("cost_to_make")
-                                    or prod_cost_map.get(p_id, 0.0)
-                                    or 0.0
-                                )
+                            unit_landed_cost = _resolve_item_unit_cost(
+                                item=item,
+                                order_doc=o,
+                                matched_ci=matched_ci,
+                                p_id=p_id,
+                                v_id=v_id,
+                                b_id=b_id,
+                                landed_cost_map=landed_cost_map,
+                                prod_cost_with_gst_map=prod_cost_map,
+                                prod_base_cost_map=prod_base_cost_map,
+                                prod_gst_map=prod_gst_map,
                             )
                             
                             sales_amounts = net_qty * sell_price
@@ -1201,14 +1323,9 @@ class SyncService:
                 purchases, _ = await _fetch_all_pages(client, f"{PURCHASE_SERVICE_URL}/purchases/by/shop/{shop_id}")
                 landed_cost_map = _extract_landed_costs_from_purchases(purchases or [], is_gst_reg)
 
-                # Fetch products for product GST map
+                # Fetch products for product GST and base cost maps
                 products, _ = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/by/shop/{shop_id}")
-                prod_gst_map = {}
-                for p in (products or []):
-                    if isinstance(p, dict) and p.get("id"):
-                        p_gst = p.get("gst") or p.get("gst_rate") or p.get("tax_rate") or (p.get("pricing_infos") or {}).get("gst") or (p.get("classification") or {}).get("gst")
-                        if p_gst:
-                            prod_gst_map[p["id"]] = p_gst
+                prod_gst_map, prod_base_cost_map, prod_cost_map = _build_product_cost_and_gst_maps(products)
 
                 datas = []
                 all_items = []
@@ -1269,23 +1386,17 @@ class SyncService:
                     v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
                     b_id = item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None)
 
-                    unit_landed_cost = (
-                        landed_cost_map.get((p_id, v_id, b_id))
-                        or landed_cost_map.get((p_id, b_id))
-                        or landed_cost_map.get((p_id, v_id))
-                        or landed_cost_map.get(p_id)
-                        or float(
-                            item.get("buy_price")
-                            or item.get("cost_to_make")
-                            or (matched_ci.get("cost_at_sale") if matched_ci else 0.0)
-                            or (matched_ci.get("cost_price") if matched_ci else 0.0)
-                            or (matched_ci.get("buy_price") if matched_ci else 0.0)
-                            or (item.get("pricing_infos") or {}).get("buy_price")
-                            or (item.get("pricing_infos") or {}).get("cost_to_make")
-                            or (item.get("custom_fields") or {}).get("buy_price")
-                            or (item.get("custom_fields") or {}).get("cost_to_make")
-                            or 0.0
-                        )
+                    unit_landed_cost = _resolve_item_unit_cost(
+                        item=item,
+                        order_doc=order_doc,
+                        matched_ci=matched_ci,
+                        p_id=p_id,
+                        v_id=v_id,
+                        b_id=b_id,
+                        landed_cost_map=landed_cost_map,
+                        prod_cost_with_gst_map=prod_cost_map,
+                        prod_base_cost_map=prod_base_cost_map,
+                        prod_gst_map=prod_gst_map,
                     )
 
                     sales_amounts = net_qty * sell_price
