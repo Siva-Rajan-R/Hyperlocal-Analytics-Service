@@ -30,6 +30,10 @@ STOCKMOVADJ_SERVICE_URL = os.getenv("STOCKMOVADJ_SERVICE_URL", "http://127.0.0.1
 SHOPEMP_SERVICE_URL = os.getenv("SHOPEMP_SERVICE_URL", "http://127.0.0.1:8001")
 
 
+def _make_http_client(**kwargs) -> httpx.AsyncClient:
+    return httpx.AsyncClient(trust_env=False, **kwargs)
+
+
 async def _get_shop_gst_registered(client: httpx.AsyncClient, shop_id: str) -> bool:
     try:
         from infras.read_db.main import CLIENT
@@ -147,8 +151,8 @@ def _extract_landed_costs_from_purchases(purchases: list, is_gst_registered: boo
                 row_base = base_buy_price
                 gst_per_unit = base_buy_price * gst_rate
 
-            # Landed cost represents true procurement outlay per unit = base price + GST + allocated shipping/other charges
-            landed_cost_unit = row_base + gst_per_unit + allocated_per_unit
+            # Base taxable procurement cost per unit excluding GST (since net revenue excludes GST, COGS must also exclude GST)
+            landed_cost_unit = row_base + allocated_per_unit
 
             p_id = it.get("product_id") or it.get("inventory_id")
             v_id = var_info.get("id") or it.get("variant_id")
@@ -218,16 +222,14 @@ def _extract_actual_sell_price(
 
     is_gst_applicable = (include_gst is True) or (order_gst_amt > 0) or (include_gst is not False and is_gst_reg and gst_pct > 0) or (gst_pct > 0)
 
-    # 3. If GST is applicable, calculate net taxable value (SP - GST)
+    # 3. If GST is applicable, calculate net taxable value (Inclusive SP / (1 + GST%))
     if is_gst_applicable and gst_pct > 0:
-        gst_amount = round(inclusive_unit_price * (gst_pct / 100.0), 2)
-        taxable_val = round(inclusive_unit_price - gst_amount, 2)
+        taxable_val = round(inclusive_unit_price / (1.0 + (gst_pct / 100.0)), 2)
         return max(0.0, taxable_val)
 
     # 4. Fallback if GST is 0%: check if net taxable value is directly provided
-    if matched_ci and matched_ci.get("taxable_value") is not None:
-        ci_qty = float(matched_ci.get("qty") or matched_ci.get("quantity") or gross_qty or 1.0)
-        return float(matched_ci["taxable_value"]) / ci_qty if ci_qty > 0 else float(matched_ci["taxable_value"])
+    if matched_ci and matched_ci.get("taxable_value") is not None and gross_qty > 0:
+        return float(matched_ci["taxable_value"]) / gross_qty
 
     if item.get("taxable_price") is not None and float(item.get("taxable_price") or 0.0) > 0:
         return float(item["taxable_price"])
@@ -299,9 +301,8 @@ def _build_product_cost_and_gst_maps(products: list) -> tuple[dict, dict, dict]:
             custom_fields.get("buy_price"),
         )
         if p_base_cost > 0:
-            gst_pct = _parse_gst_pct(p_gst)
             prod_base_cost_map[pid] = p_base_cost
-            prod_cost_with_gst_map[pid] = _add_gst_to_cost(p_base_cost, gst_pct)
+            prod_cost_with_gst_map[pid] = p_base_cost
 
     return prod_gst_map, prod_base_cost_map, prod_cost_with_gst_map
 
@@ -318,7 +319,23 @@ def _resolve_item_unit_cost(
     prod_base_cost_map: dict,
     prod_gst_map: dict,
 ) -> float:
-    """Resolve unit COGS for an order item, ensuring untracked/base costs include product GST."""
+    """Resolve unit base COGS (excluding GST) for an order item to match net taxable revenue."""
+    # 1. Prefer item's recorded buy price at the time of sale
+    item_pricing = item.get("pricing_infos") or {}
+    item_custom = item.get("custom_fields") or {}
+    item_cost = _first_positive_float(
+        item.get("raw_buy_price"),
+        item.get("buy_price"),
+        item_pricing.get("buy_price"),
+        item_pricing.get("cost_to_make"),
+        item.get("cost_to_make"),
+        item_custom.get("buy_price"),
+        item_custom.get("cost_to_make"),
+    )
+    if item_cost > 0:
+        return float(item_cost)
+
+    # 2. Check landed cost from purchases
     landed = (
         landed_cost_map.get((p_id, v_id, b_id))
         or landed_cost_map.get((p_id, b_id))
@@ -328,30 +345,12 @@ def _resolve_item_unit_cost(
     if landed and landed > 0:
         return float(landed)
 
-    ci_cost = _first_positive_float(
-        matched_ci.get("cost_at_sale") if matched_ci else 0.0,
-        matched_ci.get("cost_price") if matched_ci else 0.0,
-    )
-    prod_gst_cost = float(prod_cost_with_gst_map.get(p_id) or 0.0)
-    item_pricing = item.get("pricing_infos") or {}
-    item_custom = item.get("custom_fields") or {}
-    item_cost = _first_positive_float(
-        item.get("cost_to_make"),
-        item.get("buy_price"),
-        item_pricing.get("cost_to_make"),
-        item_pricing.get("buy_price"),
-        item_custom.get("cost_to_make"),
-        item_custom.get("buy_price"),
-    )
+    # 3. Check product catalog base cost
+    base_prod_cost = float(prod_base_cost_map.get(p_id) or 0.0)
+    if base_prod_cost > 0:
+        return base_prod_cost
 
-    raw_unit_cost = ci_cost or prod_gst_cost or item_cost
-    if raw_unit_cost <= 0:
-        return 0.0
-
-    calc_infos = order_doc.get("calculation_infos") or {}
-    if calc_infos.get("include_gst") is False:
-        return raw_unit_cost
-
+    # 4. Check calculation info cost_at_sale (strip GST if marked up)
     p_gst_val = (
         (matched_ci.get("gst_rate") if matched_ci else None)
         or (matched_ci.get("gst") if matched_ci else None)
@@ -360,20 +359,16 @@ def _resolve_item_unit_cost(
         or "0"
     )
     p_gst_pct = _parse_gst_pct(p_gst_val)
-    if p_gst_pct <= 0:
-        return raw_unit_cost
-
-    base_c = _first_positive_float(
-        prod_base_cost_map.get(p_id),
-        item.get("raw_buy_price"),
-        item.get("cost_to_make"),
-        item.get("buy_price"),
-        item_pricing.get("buy_price"),
+    ci_cost = _first_positive_float(
+        matched_ci.get("cost_at_sale") if matched_ci else 0.0,
+        matched_ci.get("cost_price") if matched_ci else 0.0,
     )
-    if base_c > 0 and abs(raw_unit_cost - base_c) < 0.01:
-        return _add_gst_to_cost(base_c, p_gst_pct)
+    if ci_cost > 0:
+        if p_gst_pct > 0 and base_prod_cost > 0 and abs(ci_cost - round(base_prod_cost * (1 + p_gst_pct/100.0), 2)) < 0.05:
+            return base_prod_cost
+        return ci_cost
 
-    return raw_unit_cost
+    return 0.0
 
 
 
@@ -688,7 +683,7 @@ class SyncService:
         
         # 2. Fetch and sync Suppliers
         try:
-            async with httpx.AsyncClient() as client:
+            async with _make_http_client() as client:
                 suppliers, status_code = await _fetch_all_pages(client, f"{SUPPLIER_SERVICE_URL}/suppliers/by/shop/{shop_id}")
                 if status_code == 200:
                     datas = []
@@ -720,7 +715,7 @@ class SyncService:
 
         # 3. Fetch and sync Customers
         try:
-            async with httpx.AsyncClient() as client:
+            async with _make_http_client() as client:
                 customers, status_code = await _fetch_all_pages(client, f"{CUSTOMER_SERVICE_URL}/customers/by/shop/{shop_id}")
                 if status_code == 200:
                     customer_cleared_map = {}
@@ -771,7 +766,7 @@ class SyncService:
         prod_base_cost_map = {}
         prod_gst_map = {}
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with _make_http_client(timeout=15.0) as client:
                 products, status_code = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/by/shop/{shop_id}")
                 
                 if status_code == 200:
@@ -792,7 +787,7 @@ class SyncService:
 
         # 5. Fetch and sync Purchases
         try:
-            async with httpx.AsyncClient() as client:
+            async with _make_http_client() as client:
                 purchases, status_code = await _fetch_all_pages(client, f"{PURCHASE_SERVICE_URL}/purchases/by/shop/{shop_id}")
                 if status_code == 200:
                     # Clean out all purchase breakdown documents for this shop to avoid keeping stale/canceled purchases
@@ -874,7 +869,7 @@ class SyncService:
 
         # 6. Fetch and sync Sales (Orders)
         try:
-            async with httpx.AsyncClient() as client:
+            async with _make_http_client() as client:
                 # Compute landed costs per product/variant/batch from purchases
                 is_gst_reg = await _get_shop_gst_registered(client, shop_id)
                 landed_cost_map = _extract_landed_costs_from_purchases(valid_purchases if 'valid_purchases' in locals() else [], is_gst_reg)
@@ -955,15 +950,18 @@ class SyncService:
                                         matched_ci = ci
                                         ci_qty = float(ci.get('qty') or ci.get('quantity') or gross_qty or 1.0)
                                         disc = float(ci.get('product_discount_amount') or 0.0) + float(ci.get('line_discount_amount') or 0.0) + float(ci.get('bill_discount_share') or 0.0) + float(ci.get('discount_amount') or 0.0)
-                                        if ci.get('final_amount') is not None and ci_qty > 0:
-                                            calc_item_price = float(ci['final_amount']) / ci_qty
-                                        elif ci.get('final_inclusive') is not None and ci_qty > 0:
-                                            calc_item_price = float(ci['final_inclusive']) / ci_qty
+                                        effective_qty = gross_qty if gross_qty > 0 else ci_qty
+                                        if ci.get('final_inclusive') is not None and effective_qty > 0:
+                                            calc_item_price = float(ci['final_inclusive']) / effective_qty
+                                        elif ci.get('final_amount') is not None and effective_qty > 0:
+                                            calc_item_price = float(ci['final_amount']) / effective_qty
                                         elif ci.get('net_price') is not None:
                                             calc_item_price = float(ci['net_price'])
                                         elif ci.get('price') is not None:
                                             orig_sp = float(ci['price'])
-                                            calc_item_price = max(0.0, (orig_sp * ci_qty - disc) / ci_qty) if ci_qty > 0 else orig_sp
+                                            if ci_qty != gross_qty and gross_qty > 0:
+                                                orig_sp = (orig_sp * ci_qty) / gross_qty
+                                            calc_item_price = max(0.0, (orig_sp * effective_qty - disc) / effective_qty) if effective_qty > 0 else orig_sp
                                         break
 
                             sell_price = _extract_actual_sell_price(
@@ -1031,7 +1029,7 @@ class SyncService:
 
         # 7. Fetch and sync Stock Movements / Adjustments
         try:
-            async with httpx.AsyncClient() as client:
+            async with _make_http_client() as client:
                 movements, status_code = await _fetch_all_pages(client, f"{STOCKMOVADJ_SERVICE_URL}/stockmovadj/by/shop/{shop_id}")
                 if status_code == 200:
                     datas = []
@@ -1082,7 +1080,7 @@ class SyncService:
     @staticmethod
     async def sync_single_supplier(shop_id: str, supplier_id: str):
         ic(f"Syncing single supplier: {supplier_id} for shop: {shop_id}")
-        async with httpx.AsyncClient() as client:
+        async with _make_http_client() as client:
             resp = await client.get(f"{SUPPLIER_SERVICE_URL}/suppliers/by/{shop_id}/{supplier_id}")
             s = None
             if resp.status_code == 200:
@@ -1119,7 +1117,7 @@ class SyncService:
     @staticmethod
     async def sync_single_customer(shop_id: str, customer_id: str):
         ic(f"Syncing single customer: {customer_id} for shop: {shop_id}")
-        async with httpx.AsyncClient() as client:
+        async with _make_http_client() as client:
             resp = await client.get(f"{CUSTOMER_SERVICE_URL}/customers/by/id/{shop_id}/{customer_id}")
             c = None
             if resp.status_code == 200:
@@ -1174,7 +1172,7 @@ class SyncService:
     @staticmethod
     async def sync_single_product(shop_id: str, product_id: str):
         ic(f"Syncing single product: {product_id} for shop: {shop_id}")
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _make_http_client(timeout=10.0) as client:
             resp = await client.get(f"{INVENTORY_SERVICE_URL}/inventories/by/id/{shop_id}/{product_id}")
             p = None
             if resp.status_code == 200:
@@ -1193,7 +1191,7 @@ class SyncService:
     @staticmethod
     async def sync_single_purchase(shop_id: str, purchase_id: str):
         ic(f"Syncing single purchase: {purchase_id} for shop: {shop_id}")
-        async with httpx.AsyncClient() as client:
+        async with _make_http_client() as client:
             resp = await client.get(f"{PURCHASE_SERVICE_URL}/purchases/by/id/{shop_id}/{purchase_id}")
             p = None
             if resp.status_code == 200:
@@ -1278,7 +1276,7 @@ class SyncService:
     @staticmethod
     async def sync_single_order(shop_id: str, order_id: str):
         ic(f"Syncing single order: {order_id} for shop: {shop_id}")
-        async with httpx.AsyncClient() as client:
+        async with _make_http_client() as client:
             resp = await client.get(f"{ORDER_SERVICE_URL}/orders/{shop_id}/{order_id}")
             o = None
             if resp.status_code == 200:
@@ -1362,15 +1360,18 @@ class SyncService:
                                 matched_ci = ci
                                 ci_qty = float(ci.get('qty') or ci.get('quantity') or gross_qty or 1.0)
                                 disc = float(ci.get('product_discount_amount') or 0.0) + float(ci.get('line_discount_amount') or 0.0) + float(ci.get('bill_discount_share') or 0.0) + float(ci.get('discount_amount') or 0.0)
-                                if ci.get('final_amount') is not None and ci_qty > 0:
-                                    calc_item_price = float(ci['final_amount']) / ci_qty
-                                elif ci.get('final_inclusive') is not None and ci_qty > 0:
-                                    calc_item_price = float(ci['final_inclusive']) / ci_qty
+                                effective_qty = gross_qty if gross_qty > 0 else ci_qty
+                                if ci.get('final_inclusive') is not None and effective_qty > 0:
+                                    calc_item_price = float(ci['final_inclusive']) / effective_qty
+                                elif ci.get('final_amount') is not None and effective_qty > 0:
+                                    calc_item_price = float(ci['final_amount']) / effective_qty
                                 elif ci.get('net_price') is not None:
                                     calc_item_price = float(ci['net_price'])
                                 elif ci.get('price') is not None:
                                     orig_sp = float(ci['price'])
-                                    calc_item_price = max(0.0, (orig_sp * ci_qty - disc) / ci_qty) if ci_qty > 0 else orig_sp
+                                    if ci_qty != gross_qty and gross_qty > 0:
+                                        orig_sp = (orig_sp * ci_qty) / gross_qty
+                                    calc_item_price = max(0.0, (orig_sp * effective_qty - disc) / effective_qty) if effective_qty > 0 else orig_sp
                                 break
 
                     sell_price = _extract_actual_sell_price(
@@ -1388,7 +1389,7 @@ class SyncService:
 
                     unit_landed_cost = _resolve_item_unit_cost(
                         item=item,
-                        order_doc=order_doc,
+                        order_doc=o,
                         matched_ci=matched_ci,
                         p_id=p_id,
                         v_id=v_id,
@@ -1447,7 +1448,7 @@ class SyncService:
     @staticmethod
     async def sync_single_stockmovadj(shop_id: str, stockmovadj_id: str):
         ic(f"Syncing single stockmovadj: {stockmovadj_id} for shop: {shop_id}")
-        async with httpx.AsyncClient() as client:
+        async with _make_http_client() as client:
             resp = await client.get(f"{STOCKMOVADJ_SERVICE_URL}/stockmovadj/by/id/{shop_id}/{stockmovadj_id}")
             m = None
             if resp.status_code == 200:
