@@ -166,19 +166,54 @@ class SalesRepo(AnalyticsBaseRepo):
             {
                 "$group": {
                     "_id": "$shop_id",
-                    "total_sales": {"$sum": 1},
+                    "total_sales": {
+                        "$sum": {
+                            "$cond": [
+                                {"$or": [
+                                    {"$gt": ["$stocks", 0]},
+                                    {"$gt": ["$sales_amounts", 0]}
+                                ]},
+                                1,
+                                0
+                            ]
+                        }
+                    },
                     "total_sales_amounts": {"$sum": "$sales_amounts"},
                     "total_cost": {"$sum": "$cost_amounts"},
                     "total_profit": {"$sum": "$profit_amounts"},
                     "total_sales_stocks": {"$sum": "$stocks"},
                     "total_online_sales": {
-                        "$sum": {"$cond": [{"$eq": ["$sales_type", "ONLINE"]}, 1, 0]}
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [
+                                    {"$eq": ["$sales_type", "ONLINE"]},
+                                    {"$or": [
+                                        {"$gt": ["$stocks", 0]},
+                                        {"$gt": ["$sales_amounts", 0]}
+                                    ]}
+                                ]},
+                                1,
+                                0
+                            ]
+                        }
                     },
                     "total_online_sales_amount": {
                         "$sum": {"$cond": [{"$eq": ["$sales_type", "ONLINE"]}, "$sales_amounts", 0.0]}
                     },
                     "total_offline_sales": {
-                        "$sum": {"$cond": [{"$ne": ["$sales_type", "ONLINE"]}, 1, 0]}
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [
+                                    {"$ne": ["$sales_type", "ONLINE"]},
+                                    {"$or": [
+                                        {"$gt": ["$stocks", 0]},
+                                        {"$gt": ["$sales_amounts", 0]}
+                                    ]}
+                                ]},
+                                1,
+                                0
+                            ]
+                        }
                     },
                     "total_offline_sales_amount": {
                         "$sum": {"$cond": [{"$ne": ["$sales_type", "ONLINE"]}, "$sales_amounts", 0.0]}
@@ -200,6 +235,10 @@ class SalesRepo(AnalyticsBaseRepo):
         total_bill_amount = 0.0
         total_received_amount = 0.0
         for o in orders:
+            # Skip fully returned / inactive sales
+            if float(o.get("stocks") or 0.0) <= 0.0 and float(o.get("sales_amounts") or 0.0) <= 0.0:
+                continue
+
             b_amt = float(o.get("bill_amount") or o.get("sales_amounts") or 0.0)
             total_bill_amount += b_amt
             r_amt = float(o.get("received_amount") or 0.0)
@@ -280,19 +319,54 @@ class SalesRepo(AnalyticsBaseRepo):
             {
                 "$group": {
                     "_id": "$date",
-                    "total_sales": {"$sum": 1},
+                    "total_sales": {
+                        "$sum": {
+                            "$cond": [
+                                {"$or": [
+                                    {"$gt": ["$stocks", 0]},
+                                    {"$gt": ["$sales_amounts", 0]}
+                                ]},
+                                1,
+                                0
+                            ]
+                        }
+                    },
                     "total_sales_amounts": {"$sum": "$sales_amounts"},
                     "total_cost": {"$sum": "$cost_amounts"},
                     "total_profit": {"$sum": "$profit_amounts"},
                     "total_sales_stocks": {"$sum": "$stocks"},
                     "total_online_sales": {
-                        "$sum": {"$cond": [{"$eq": ["$sales_type", "ONLINE"]}, 1, 0]}
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [
+                                    {"$eq": ["$sales_type", "ONLINE"]},
+                                    {"$or": [
+                                        {"$gt": ["$stocks", 0]},
+                                        {"$gt": ["$sales_amounts", 0]}
+                                    ]}
+                                ]},
+                                1,
+                                0
+                            ]
+                        }
                     },
                     "total_online_sales_amount": {
                         "$sum": {"$cond": [{"$eq": ["$sales_type", "ONLINE"]}, "$sales_amounts", 0.0]}
                     },
                     "total_offline_sales": {
-                        "$sum": {"$cond": [{"$ne": ["$sales_type", "ONLINE"]}, 1, 0]}
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [
+                                    {"$ne": ["$sales_type", "ONLINE"]},
+                                    {"$or": [
+                                        {"$gt": ["$stocks", 0]},
+                                        {"$gt": ["$sales_amounts", 0]}
+                                    ]}
+                                ]},
+                                1,
+                                0
+                            ]
+                        }
                     },
                     "total_offline_sales_amount": {
                         "$sum": {"$cond": [{"$ne": ["$sales_type", "ONLINE"]}, "$sales_amounts", 0.0]}

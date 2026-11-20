@@ -454,6 +454,8 @@ class ProdInvRepo(AnalyticsBaseRepo):
         amount: float,
         sales_type: str,
     ):
+        if float(stocks or 0.0) <= 0.0 and float(amount or 0.0) <= 0.0:
+            return
         is_online = (sales_type or "").upper() == "ONLINE"
         qty = float(stocks or 1.0)
         

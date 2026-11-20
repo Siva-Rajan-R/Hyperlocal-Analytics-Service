@@ -158,6 +158,8 @@ class CustomerRepo(AnalyticsBaseRepo):
         amount: float,
         sales_type: str,
     ):
+        if float(amount or 0.0) <= 0.0:
+            return
         is_online = (sales_type or "").upper() == "ONLINE"
         
         inc_fields = {

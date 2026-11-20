@@ -123,27 +123,67 @@ class SupplierRepo(AnalyticsBaseRepo):
             )
         return {"status": "success"}
 
+    async def recalculate_supplier_purchases(self, shop_id: str, supplier_id: Optional[str] = None):
+        purchase_breakdown = ANALYTICS_COLLECTIONS["purchase"]["breakdown"]
+        match_filter: dict = {"shop_id": shop_id}
+        if supplier_id:
+            match_filter["supplier_id"] = supplier_id
+
+        pipeline = [
+            {"$match": match_filter},
+            {
+                "$group": {
+                    "_id": "$supplier_id",
+                    "total_purchases": {"$sum": 1},
+                    "total_purchase_amounts": {"$sum": "$purchase_amounts"},
+                    "total_purchase_stocks": {"$sum": "$stocks"}
+                }
+            }
+        ]
+        agg_results = await purchase_breakdown.aggregate(pipeline).to_list(None)
+
+        updated_suppliers = set()
+        for res in agg_results:
+            s_id = res.get("_id")
+            if not s_id:
+                continue
+            updated_suppliers.add(s_id)
+            await self.breakdown.update_one(
+                {"shop_id": shop_id, "supplier_id": s_id},
+                {
+                    "$set": {
+                        "total_purchases": int(res.get("total_purchases", 0)),
+                        "total_purchase_amounts": float(res.get("total_purchase_amounts", 0.0)),
+                        "total_purchase_stocks": float(res.get("total_purchase_stocks", 0.0)),
+                        "timestamp": datetime.utcnow()
+                    }
+                },
+                upsert=True
+            )
+
+        if supplier_id and supplier_id not in updated_suppliers:
+            await self.breakdown.update_one(
+                {"shop_id": shop_id, "supplier_id": supplier_id},
+                {
+                    "$set": {
+                        "total_purchases": 0,
+                        "total_purchase_amounts": 0.0,
+                        "total_purchase_stocks": 0.0,
+                        "timestamp": datetime.utcnow()
+                    }
+                }
+            )
+
     async def apply_purchase(
         self,
         shop_id: str,
         supplier_id: str,
-        amount: float,
+        amount: float = 0.0,
         total_purchase: int = 1,
     ):
-        await self.breakdown.update_one(
-            {
-                "shop_id": shop_id,
-                "supplier_id": supplier_id,
-            },
-            {
-                "$inc": {
-                    "total_purchases": total_purchase,
-                    "total_purchase_amounts": amount,
-                },
-                "$set": {"timestamp": datetime.utcnow()},
-            },
-            upsert=True,
-        )
+        if not supplier_id:
+            return
+        await self.recalculate_supplier_purchases(shop_id=shop_id, supplier_id=supplier_id)
 
     async def get_overall(self, shop_id: str, supplier_id: Optional[str] = None):
         if supplier_id:

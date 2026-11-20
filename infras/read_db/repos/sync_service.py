@@ -151,8 +151,11 @@ def _extract_landed_costs_from_purchases(purchases: list, is_gst_registered: boo
                 row_base = base_buy_price
                 gst_per_unit = base_buy_price * gst_rate
 
-            # Base taxable procurement cost per unit excluding GST (since net revenue excludes GST, COGS must also exclude GST)
-            landed_cost_unit = row_base + allocated_per_unit
+            # Base procurement cost per unit:
+            # If shop is GST registered, base cost excludes GST (since GST is claimed via ITC).
+            # If shop is NOT GST registered, shop cannot claim ITC, so GST paid is part of true COGS!
+            effective_base = row_base if is_gst_registered else (row_base + gst_per_unit)
+            landed_cost_unit = effective_base + allocated_per_unit
 
             p_id = it.get("product_id") or it.get("inventory_id")
             v_id = var_info.get("id") or it.get("variant_id")
@@ -216,11 +219,16 @@ def _extract_actual_sell_price(
         except Exception:
             gst_pct = 0.0
 
+    # For Non-GST registered sellers, they do NOT collect or remit GST.
+    # Therefore, sell price is the actual customer selling price without dividing by (1 + GST%).
+    if not is_gst_reg:
+        return inclusive_unit_price
+
     calc_infos = order_doc.get("calculation_infos") or {}
     include_gst = calc_infos.get("include_gst")
     order_gst_amt = float(calc_infos.get("gst_amount") or 0.0)
 
-    is_gst_applicable = (include_gst is True) or (order_gst_amt > 0) or (include_gst is not False and is_gst_reg and gst_pct > 0) or (gst_pct > 0)
+    is_gst_applicable = (include_gst is True) or (order_gst_amt > 0) or (include_gst is not False and is_gst_reg and gst_pct > 0)
 
     # 3. If GST is applicable, calculate net taxable value (Inclusive SP / (1 + GST%))
     if is_gst_applicable and gst_pct > 0:
@@ -320,7 +328,17 @@ def _resolve_item_unit_cost(
     prod_gst_map: dict,
 ) -> float:
     """Resolve unit base COGS (excluding GST) for an order item to match net taxable revenue."""
-    # 1. Prefer item's recorded buy price at the time of sale
+    # 1. Prefer landed cost from purchases (includes allocated freight/transport and other charges)
+    landed = (
+        landed_cost_map.get((p_id, v_id, b_id))
+        or landed_cost_map.get((p_id, b_id))
+        or landed_cost_map.get((p_id, v_id))
+        or landed_cost_map.get(p_id)
+    )
+    if landed and landed > 0:
+        return float(landed)
+
+    # 2. Check item's recorded buy price at the time of sale
     item_pricing = item.get("pricing_infos") or {}
     item_custom = item.get("custom_fields") or {}
     item_cost = _first_positive_float(
@@ -334,16 +352,6 @@ def _resolve_item_unit_cost(
     )
     if item_cost > 0:
         return float(item_cost)
-
-    # 2. Check landed cost from purchases
-    landed = (
-        landed_cost_map.get((p_id, v_id, b_id))
-        or landed_cost_map.get((p_id, b_id))
-        or landed_cost_map.get((p_id, v_id))
-        or landed_cost_map.get(p_id)
-    )
-    if landed and landed > 0:
-        return float(landed)
 
     # 3. Check product catalog base cost
     base_prod_cost = float(prod_base_cost_map.get(p_id) or 0.0)
@@ -827,20 +835,26 @@ class SyncService:
                             net_qty = max(0.0, gross_qty - ret_qty)
 
                             buy_price = float(item.get("buy_price") or 0.0)
-                            if not buy_price and gross_qty > 0:
-                                buy_price = float(item.get("total_amount") or 0.0) / gross_qty
-                                
-                            item_subtotal = net_qty * buy_price
-                            item_gst_amt = 0.0
-                            item_gst = item.get("gst") or "0%"
-                            if item_gst and str(item_gst).endswith('%') and gst_type == "EXCLUSIVE":
-                                try:
-                                    gst_rate = float(str(item_gst)[:-1]) / 100.0
-                                    item_gst_amt = gst_rate * item_subtotal
-                                except ValueError:
-                                    pass
-                                    
-                            item_total_amount = item_subtotal + item_gst_amt
+                            raw_total_amount = float(item.get("total_amount") or 0.0)
+                            
+                            if raw_total_amount > 0:
+                                if gross_qty > 0 and ret_qty > 0:
+                                    item_total_amount = round(raw_total_amount * (net_qty / gross_qty), 2)
+                                else:
+                                    item_total_amount = raw_total_amount
+                            else:
+                                if not buy_price and gross_qty > 0:
+                                    buy_price = raw_total_amount / gross_qty
+                                item_subtotal = net_qty * buy_price
+                                item_gst_amt = 0.0
+                                item_gst = item.get("gst") or "0%"
+                                if item_gst and str(item_gst).endswith('%'):
+                                    try:
+                                        gst_rate = float(str(item_gst)[:-1]) / 100.0
+                                        item_gst_amt = gst_rate * item_subtotal
+                                    except ValueError:
+                                        pass
+                                item_total_amount = item_subtotal + item_gst_amt
                             item_outst = p_outst if idx == 0 else 0.0
                             
                             datas.append(PurchaseAnalyticsDatas(
@@ -889,10 +903,12 @@ class SyncService:
                         # Precompute returns and exchanges
                         returned_qty_map = {}
                         returns = o.get("returns") or []
+                        order_total_refund = 0.0
                         if isinstance(returns, list):
                             for ret in returns:
                                 if not isinstance(ret, dict):
                                     continue
+                                order_total_refund += float(ret.get("total_refund_amount") or ret.get("refund_amount") or ret.get("amount") or 0.0)
                                 r_items = ret.get("items") or ret.get("returned_items") or []
                                 if isinstance(r_items, list):
                                     for r_item in r_items:
@@ -900,6 +916,16 @@ class SyncService:
                                             continue
                                         oi_id = r_item.get("order_item_id") or r_item.get("id")
                                         returned_qty_map[oi_id] = returned_qty_map.get(oi_id, 0.0) + float(r_item.get("quantity") or r_item.get("qty") or 0.0)
+
+                        direct_refund = float(o.get("refund_amount") or o.get("total_refund") or 0.0)
+                        if direct_refund > order_total_refund:
+                            order_total_refund = direct_refund
+
+                        if str(o.get("status", "")).upper() in ("RETURNED", "REFUNDED") and order_total_refund <= 0:
+                            order_total_refund = bill_amt
+
+                        net_bill_amt = max(0.0, bill_amt - order_total_refund)
+                        net_recv_amt = max(0.0, recv_amt - order_total_refund)
                         
                         exchanged_qty_map = {}
                         exchanges = o.get("exchanges") or []
@@ -1012,8 +1038,8 @@ class SyncService:
                                 sales_type=o.get("origin") or "OFFLINE",
                                 payment_method=pm_method,
                                 payments=pm_dict,
-                                bill_amount=bill_amt,
-                                received_amount=recv_amt,
+                                bill_amount=net_bill_amt,
+                                received_amount=net_recv_amt,
                                 created_at=o_date
                             ))
                     if datas:
@@ -1240,20 +1266,26 @@ class SyncService:
                     
                     # Usually buy_price is per unit, total_amount is overall
                     buy_price = float(item.get("buy_price") or 0.0)
-                    if not buy_price and gross_qty > 0:
-                        buy_price = float(item.get("total_amount") or 0.0) / gross_qty
-                        
-                    item_subtotal = net_qty * buy_price
-                    item_gst_amt = 0.0
-                    item_gst = item.get("gst") or "0%"
-                    if item_gst and str(item_gst).endswith('%') and gst_type == "EXCLUSIVE":
-                        try:
-                            gst_rate = float(str(item_gst)[:-1]) / 100.0
-                            item_gst_amt = gst_rate * item_subtotal
-                        except ValueError:
-                            pass
-                            
-                    item_total_amount = item_subtotal + item_gst_amt
+                    raw_total_amount = float(item.get("total_amount") or 0.0)
+                    
+                    if raw_total_amount > 0:
+                        if gross_qty > 0 and ret_qty > 0:
+                            item_total_amount = round(raw_total_amount * (net_qty / gross_qty), 2)
+                        else:
+                            item_total_amount = raw_total_amount
+                    else:
+                        if not buy_price and gross_qty > 0:
+                            buy_price = raw_total_amount / gross_qty
+                        item_subtotal = net_qty * buy_price
+                        item_gst_amt = 0.0
+                        item_gst = item.get("gst") or "0%"
+                        if item_gst and str(item_gst).endswith('%'):
+                            try:
+                                gst_rate = float(str(item_gst)[:-1]) / 100.0
+                                item_gst_amt = gst_rate * item_subtotal
+                            except ValueError:
+                                pass
+                        item_total_amount = item_subtotal + item_gst_amt
                     item_outst = p_outst if idx == 0 else 0.0
 
                     datas.append(PurchaseAnalyticsDatas(

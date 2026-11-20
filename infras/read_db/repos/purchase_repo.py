@@ -49,6 +49,8 @@ class PurchaseRepo(AnalyticsBaseRepo):
             len(payload.datas) > 0 and all((item.stocks or 0) <= 0 and (item.purchase_amounts or 0) <= 0 for item in payload.datas)
         )
 
+        is_delta_update = getattr(payload, "total_purchase", None) == 0
+
         # Group incoming items by purchase_id
         purchases_map = {}
         for item in payload.datas:
@@ -69,9 +71,9 @@ class PurchaseRepo(AnalyticsBaseRepo):
                 purchases_map[p_id]["outstanding_amounts"] = float(item.outstanding_amounts)
 
             # Determine total_purchase delta for breakdown counters
-            total_pur_delta = -1 if is_cancellation else (1 if (item.stocks or 0) > 0 else (-1 if (item.stocks or 0) < 0 else 0))
+            total_pur_delta = 0 if is_delta_update else (-1 if is_cancellation else (1 if (item.stocks or 0) > 0 else (-1 if (item.stocks or 0) < 0 else 0)))
 
-            # Update metrics on product breakdown & supplier breakdown
+            # Update metrics on product breakdown
             from .prod_inv_repo import prod_inv_repo
             await prod_inv_repo.apply_purchase(
                 shop_id=payload.shop_id,
@@ -81,14 +83,6 @@ class PurchaseRepo(AnalyticsBaseRepo):
                 stocks=item.stocks or 0.0,
                 amount=item.purchase_amounts or 0.0,
                 outstanding=item.outstanding_amounts or 0.0,
-                total_purchase=total_pur_delta,
-            )
-
-            from .supplier_repo import supplier_repo
-            await supplier_repo.apply_purchase(
-                shop_id=payload.shop_id,
-                supplier_id=item.supplier_id,
-                amount=item.purchase_amounts or 0.0,
                 total_purchase=total_pur_delta,
             )
 
@@ -120,6 +114,11 @@ class PurchaseRepo(AnalyticsBaseRepo):
         # Recalculate overall & daily from breakdown
         await self.recalculate_overall(payload.shop_id)
         await self.recalculate_daily(payload.shop_id)
+
+        # Recalculate supplier performance metrics from breakdown
+        from .supplier_repo import supplier_repo
+        await supplier_repo.recalculate_supplier_purchases(payload.shop_id)
+
         return {"success": True}
 
     async def recalculate_overall(self, shop_id: str):
