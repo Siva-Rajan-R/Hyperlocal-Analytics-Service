@@ -45,11 +45,13 @@ async def emit_notification(
     except Exception as e:
         ic(f"RabbitMQ notification emit failed: {e}")
 
-    # 2. Direct HTTP fallback to Notification Service on port 8009 if MQ wasn't sent
+    # 2. Direct HTTP fallback to Notification Service if MQ wasn't sent
     if not published_mq:
         try:
+            import os
+            notif_url = os.getenv("NOTIFICATION_SERVICE_URL") or "http://notification-service:8000"
             req = urllib.request.Request(
-                "http://127.0.0.1:8009/notifications/send",
+                f"{notif_url.rstrip('/')}/notifications/send",
                 data=json.dumps(payload).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
                 method="POST"

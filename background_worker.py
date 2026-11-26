@@ -67,12 +67,19 @@ async def sync_analytics_task(ctx, payload: dict):
         # 3. Emit real-time notification to user/shop
         if emit_notification:
             try:
+                target_users = []
+                if user_id:
+                    target_users.append(user_id)
+                if shop_id and shop_id not in target_users:
+                    target_users.append(shop_id)
+
                 await emit_notification(
                     title="Analytics Sync Finished",
                     message="Shop analytics data has been synchronized successfully.",
                     type="success",
-                    user_id=user_id,
-                    target_type="particular" if user_id else "all",
+                    user_id=user_id or shop_id,
+                    user_ids=target_users if target_users else None,
+                    target_type="particular" if (user_id or shop_id) else "all",
                     additional_metadata={
                         "type": "analytics_sync",
                         "shop_id": shop_id,
@@ -99,12 +106,19 @@ async def sync_analytics_task(ctx, payload: dict):
 
         if emit_notification:
             try:
+                target_users = []
+                if user_id:
+                    target_users.append(user_id)
+                if shop_id and shop_id not in target_users:
+                    target_users.append(shop_id)
+
                 await emit_notification(
                     title="Analytics Sync Failed",
                     message=f"Failed to synchronize analytics: {str(e)}",
                     type="error",
-                    user_id=user_id,
-                    target_type="particular" if user_id else "all",
+                    user_id=user_id or shop_id,
+                    user_ids=target_users if target_users else None,
+                    target_type="particular" if (user_id or shop_id) else "all",
                     additional_metadata={
                         "type": "analytics_sync",
                         "shop_id": shop_id,

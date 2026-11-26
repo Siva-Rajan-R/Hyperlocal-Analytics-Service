@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Query, Header, HTTPException, status
 from arq import create_pool
 from arq.connections import RedisSettings
+from urllib.parse import urlparse, unquote
 import redis.asyncio as aioredis
 from infras.read_db.repos.sync_service import SyncService
 from helpers.emit_notification import emit_notification
@@ -17,6 +18,15 @@ router = APIRouter(
 )
 
 REDIS_URL = os.getenv("PLATFORM_REDIS_URL") or "redis://localhost:6379"
+
+def _get_redis_settings(dsn: str) -> RedisSettings:
+    parsed = urlparse(dsn)
+    return RedisSettings(
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 6379,
+        password=unquote(parsed.password) if parsed.password else None,
+        database=int(parsed.path.lstrip("/")) if parsed.path and parsed.path.lstrip("/").isdigit() else 0,
+    )
 
 @router.post("")
 async def sync_shop_data(
@@ -52,7 +62,8 @@ async def sync_shop_data(
     # 2. Enqueue in ARQ background worker queue
     enqueued = False
     try:
-        arq_pool = await create_pool(RedisSettings.from_dsn(REDIS_URL))
+        redis_settings = _get_redis_settings(REDIS_URL)
+        arq_pool = await create_pool(redis_settings)
         await arq_pool.enqueue_job("sync_analytics_task", payload, _queue_name="analytics_sync_queue")
         await arq_pool.aclose()
         enqueued = True
