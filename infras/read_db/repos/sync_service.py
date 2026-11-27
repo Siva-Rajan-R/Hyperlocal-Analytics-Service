@@ -77,8 +77,17 @@ async def _get_shop_gst_registered(client: httpx.AsyncClient, shop_id: str) -> b
     return True
 
 
-def _extract_landed_costs_from_purchases(purchases: list, is_gst_registered: bool) -> dict:
-    cost_map = {}
+def _extract_landed_costs_from_purchases(purchases: list, is_gst_registered: bool) -> tuple[dict, dict, dict, dict]:
+    """
+    Returns:
+      (cost_with_gst_map, base_cost_map, itc_map, transport_map)
+      keyed by (p_id, v_id, b_id), (p_id, b_id), (p_id, v_id), and p_id.
+    """
+    cost_with_gst_map = {}
+    base_cost_map = {}
+    itc_map = {}
+    transport_map = {}
+
     for p in purchases:
         if not isinstance(p, dict):
             continue
@@ -89,7 +98,12 @@ def _extract_landed_costs_from_purchases(purchases: list, is_gst_registered: boo
         distribute_by = str(calc_infos.get("distribute_by") or "BY_VALUE").upper()
 
         charges = p.get("charges_infos") or p.get("charges") or {}
-        total_charges = float(charges.get("transport_charge") or 0.0) + float(charges.get("other_charge") or 0.0)
+        total_charges = (
+            float(charges.get("transport_charge") or 0.0) +
+            float(charges.get("other_charge") or 0.0) +
+            float(charges.get("shipping_charge") or 0.0) +
+            float(charges.get("delivery_charge") or 0.0)
+        )
 
         gst_infos = p.get("gst_infos") or {}
         gst_type = str(gst_infos.get("type") or calc_infos.get("gst_type") or "EXCLUSIVE").upper()
@@ -147,30 +161,36 @@ def _extract_landed_costs_from_purchases(purchases: list, is_gst_registered: boo
             if gst_type == "INCLUSIVE":
                 row_base = base_buy_price / (1.0 + gst_rate) if gst_rate > 0 else base_buy_price
                 gst_per_unit = base_buy_price - row_base
+                unit_with_gst = base_buy_price
             else:
                 row_base = base_buy_price
                 gst_per_unit = base_buy_price * gst_rate
+                unit_with_gst = base_buy_price + gst_per_unit
 
-            # Base procurement cost per unit:
-            # If shop is GST registered, base cost excludes GST (since GST is claimed via ITC).
-            # If shop is NOT GST registered, shop cannot claim ITC, so GST paid is part of true COGS!
-            effective_base = row_base if is_gst_registered else (row_base + gst_per_unit)
-            landed_cost_unit = effective_base + allocated_per_unit
+            unit_base = row_base
+            unit_itc = gst_per_unit if is_gst_registered else 0.0
 
             p_id = it.get("product_id") or it.get("inventory_id")
             v_id = var_info.get("id") or it.get("variant_id")
             b_id = bat_info.get("id") or it.get("batch_id")
 
+            keys = []
+            if p_id and v_id and b_id:
+                keys.append((p_id, v_id, b_id))
+            if p_id and b_id:
+                keys.append((p_id, b_id))
+            if p_id and v_id:
+                keys.append((p_id, v_id))
             if p_id:
-                if v_id and b_id:
-                    cost_map[(p_id, v_id, b_id)] = landed_cost_unit
-                if b_id:
-                    cost_map[(p_id, b_id)] = landed_cost_unit
-                if v_id:
-                    cost_map[(p_id, v_id)] = landed_cost_unit
-                cost_map[p_id] = landed_cost_unit
+                keys.append(p_id)
 
-    return cost_map
+            for k in keys:
+                cost_with_gst_map[k] = unit_with_gst
+                base_cost_map[k] = unit_base
+                itc_map[k] = unit_itc
+                transport_map[k] = allocated_per_unit
+
+    return cost_with_gst_map, base_cost_map, itc_map, transport_map
 
 
 def _extract_actual_sell_price(
@@ -269,11 +289,15 @@ def _first_positive_float(*vals) -> float:
     return 0.0
 
 
-def _build_product_cost_and_gst_maps(products: list) -> tuple[dict, dict, dict]:
-    """Build (prod_gst_map, prod_base_cost_map, prod_cost_with_gst_map) keyed by product id."""
+def _build_product_cost_and_gst_maps(products: list, is_gst_registered: bool = False) -> tuple[dict, dict, dict, dict]:
+    """
+    Build (prod_gst_map, prod_base_cost_map, prod_cost_with_gst_map, prod_itc_map) keyed by product id.
+    Handles made-to-order / non-tracked products with cost_to_make / buy_price and buy_price_tax_inclusive flag.
+    """
     prod_gst_map = {}
     prod_base_cost_map = {}
     prod_cost_with_gst_map = {}
+    prod_itc_map = {}
 
     for p in (products or []):
         if not isinstance(p, dict) or not p.get("id"):
@@ -297,8 +321,24 @@ def _build_product_cost_and_gst_maps(products: list) -> tuple[dict, dict, dict]:
         )
         if p_gst:
             prod_gst_map[pid] = p_gst
+        gst_pct = _parse_gst_pct(p_gst)
 
-        p_base_cost = _first_positive_float(
+        is_inclusive = bool(
+            p.get("buy_price_tax_inclusive")
+            or p.get("cost_price_tax_inclusive")
+            or p.get("cost_tax_type") == "inclusive"
+            or top_pricing.get("buy_price_tax_inclusive")
+            or top_pricing.get("cost_price_tax_inclusive")
+            or top_pricing.get("cost_tax_type") == "inclusive"
+            or unit_pricing.get("buy_price_tax_inclusive")
+            or unit_pricing.get("cost_price_tax_inclusive")
+            or unit_pricing.get("cost_tax_type") == "inclusive"
+            or custom_fields.get("buy_price_tax_inclusive")
+            or custom_fields.get("cost_price_tax_inclusive")
+            or custom_fields.get("cost_tax_type") == "inclusive"
+        )
+
+        p_raw_cost = _first_positive_float(
             p.get("cost_to_make"),
             p.get("buy_price"),
             top_pricing.get("cost_to_make"),
@@ -308,37 +348,74 @@ def _build_product_cost_and_gst_maps(products: list) -> tuple[dict, dict, dict]:
             custom_fields.get("cost_to_make"),
             custom_fields.get("buy_price"),
         )
-        if p_base_cost > 0:
-            prod_base_cost_map[pid] = p_base_cost
-            prod_cost_with_gst_map[pid] = p_base_cost
 
-    return prod_gst_map, prod_base_cost_map, prod_cost_with_gst_map
+        if p_raw_cost > 0:
+            if is_inclusive:
+                base_c = round(p_raw_cost / (1.0 + (gst_pct / 100.0)), 2) if gst_pct > 0 else p_raw_cost
+                c_with_gst = p_raw_cost
+                tax_c = round(p_raw_cost - base_c, 2)
+            else:
+                base_c = p_raw_cost
+                tax_c = round(p_raw_cost * (gst_pct / 100.0), 2) if gst_pct > 0 else 0.0
+                c_with_gst = round(p_raw_cost + tax_c, 2)
+
+            prod_base_cost_map[pid] = base_c
+            prod_cost_with_gst_map[pid] = c_with_gst
+            prod_itc_map[pid] = tax_c if is_gst_registered else 0.0
+
+    return prod_gst_map, prod_base_cost_map, prod_cost_with_gst_map, prod_itc_map
 
 
-def _resolve_item_unit_cost(
+def _resolve_item_costs_and_taxes(
     item: dict,
     order_doc: dict,
     matched_ci: dict | None,
     p_id: str,
     v_id,
     b_id,
-    landed_cost_map: dict,
+    cost_with_gst_map: dict,
+    base_cost_map: dict,
+    itc_map: dict,
+    transport_map: dict,
     prod_cost_with_gst_map: dict,
     prod_base_cost_map: dict,
+    prod_itc_map: dict,
     prod_gst_map: dict,
-) -> float:
-    """Resolve unit base COGS (excluding GST) for an order item to match net taxable revenue."""
-    # 1. Prefer landed cost from purchases (includes allocated freight/transport and other charges)
-    landed = (
-        landed_cost_map.get((p_id, v_id, b_id))
-        or landed_cost_map.get((p_id, b_id))
-        or landed_cost_map.get((p_id, v_id))
-        or landed_cost_map.get(p_id)
-    )
-    if landed and landed > 0:
-        return float(landed)
+    is_gst_reg: bool = False,
+) -> tuple[float, float, float, float]:
+    """
+    Resolves: (unit_base_cost, unit_cost_with_gst, unit_itc, unit_transport)
+    """
+    keys = []
+    if p_id and v_id and b_id:
+        keys.append((p_id, v_id, b_id))
+    if p_id and b_id:
+        keys.append((p_id, b_id))
+    if p_id and v_id:
+        keys.append((p_id, v_id))
+    if p_id:
+        keys.append(p_id)
 
-    # 2. Check item's recorded buy price at the time of sale
+    # 1. Check purchase records
+    for k in keys:
+        if k in cost_with_gst_map and cost_with_gst_map[k] > 0:
+            return (
+                float(base_cost_map.get(k, cost_with_gst_map[k])),
+                float(cost_with_gst_map[k]),
+                float(itc_map.get(k, 0.0)) if is_gst_reg else 0.0,
+                float(transport_map.get(k, 0.0)),
+            )
+
+    # 2. Check catalog definition (non-tracked / made-to-order)
+    if p_id and p_id in prod_base_cost_map:
+        return (
+            float(prod_base_cost_map[p_id]),
+            float(prod_cost_with_gst_map.get(p_id, prod_base_cost_map[p_id])),
+            float(prod_itc_map.get(p_id, 0.0)) if is_gst_reg else 0.0,
+            0.0,
+        )
+
+    # 3. Check recorded cost at sale
     item_pricing = item.get("pricing_infos") or {}
     item_custom = item.get("custom_fields") or {}
     item_cost = _first_positive_float(
@@ -349,34 +426,44 @@ def _resolve_item_unit_cost(
         item.get("cost_to_make"),
         item_custom.get("buy_price"),
         item_custom.get("cost_to_make"),
-    )
-    if item_cost > 0:
-        return float(item_cost)
-
-    # 3. Check product catalog base cost
-    base_prod_cost = float(prod_base_cost_map.get(p_id) or 0.0)
-    if base_prod_cost > 0:
-        return base_prod_cost
-
-    # 4. Check calculation info cost_at_sale (strip GST if marked up)
-    p_gst_val = (
-        (matched_ci.get("gst_rate") if matched_ci else None)
-        or (matched_ci.get("gst") if matched_ci else None)
-        or item.get("gst")
-        or prod_gst_map.get(p_id)
-        or "0"
-    )
-    p_gst_pct = _parse_gst_pct(p_gst_val)
-    ci_cost = _first_positive_float(
         matched_ci.get("cost_at_sale") if matched_ci else 0.0,
         matched_ci.get("cost_price") if matched_ci else 0.0,
     )
-    if ci_cost > 0:
-        if p_gst_pct > 0 and base_prod_cost > 0 and abs(ci_cost - round(base_prod_cost * (1 + p_gst_pct/100.0), 2)) < 0.05:
-            return base_prod_cost
-        return ci_cost
 
-    return 0.0
+    if item_cost > 0:
+        p_gst_val = (
+            (matched_ci.get("gst_rate") if matched_ci else None)
+            or (matched_ci.get("gst") if matched_ci else None)
+            or item.get("gst")
+            or prod_gst_map.get(p_id)
+            or "0"
+        )
+        p_gst_pct = _parse_gst_pct(p_gst_val)
+        is_inc = bool(
+            item.get("buy_price_tax_inclusive")
+            or item.get("cost_price_tax_inclusive")
+            or item.get("cost_tax_type") == "inclusive"
+            or item_pricing.get("buy_price_tax_inclusive")
+            or item_pricing.get("cost_price_tax_inclusive")
+            or item_pricing.get("cost_tax_type") == "inclusive"
+            or item_custom.get("buy_price_tax_inclusive")
+            or item_custom.get("cost_price_tax_inclusive")
+            or item_custom.get("cost_tax_type") == "inclusive"
+            or (matched_ci.get("buy_price_tax_inclusive") if matched_ci else False)
+            or (matched_ci.get("cost_tax_type") == "inclusive" if matched_ci else False)
+        )
+        if is_inc:
+            b_cost = round(item_cost / (1.0 + (p_gst_pct / 100.0)), 2) if p_gst_pct > 0 else item_cost
+            c_with_g = item_cost
+            itc_val = round(item_cost - b_cost, 2) if is_gst_reg else 0.0
+        else:
+            b_cost = item_cost
+            tax_g = round(item_cost * (p_gst_pct / 100.0), 2) if p_gst_pct > 0 else 0.0
+            c_with_g = round(item_cost + tax_g, 2)
+            itc_val = tax_g if is_gst_reg else 0.0
+        return b_cost, c_with_g, itc_val, 0.0
+
+    return 0.0, 0.0, 0.0, 0.0
 
 
 
@@ -773,15 +860,17 @@ class SyncService:
         prod_cost_map = {}
         prod_base_cost_map = {}
         prod_gst_map = {}
+        prod_itc_map = {}
         try:
             async with _make_http_client(timeout=15.0) as client:
                 products, status_code = await _fetch_all_pages(client, f"{INVENTORY_SERVICE_URL}/inventories/by/shop/{shop_id}")
+                is_gst_reg_shop = await _get_shop_gst_registered(client, shop_id)
                 
                 if status_code == 200:
                     datas = []
                     for p in products:
                         datas.extend(_extract_product_analytics_items(p))
-                    prod_gst_map, prod_base_cost_map, prod_cost_map = _build_product_cost_and_gst_maps(products)
+                    prod_gst_map, prod_base_cost_map, prod_cost_map, prod_itc_map = _build_product_cost_and_gst_maps(products, is_gst_reg_shop)
                     if datas:
                         payload = ProdInvAnalyticsSchema(shop_id=shop_id, datas=datas)
                         await prod_inv_repo.process_inventory_sync(payload)
@@ -794,6 +883,7 @@ class SyncService:
             status["inventory"] = f"Error syncing inventory: {str(e)}"
 
         # 5. Fetch and sync Purchases
+        valid_purchases = []
         try:
             async with _make_http_client() as client:
                 purchases, status_code = await _fetch_all_pages(client, f"{PURCHASE_SERVICE_URL}/purchases/by/shop/{shop_id}")
@@ -837,24 +927,42 @@ class SyncService:
                             buy_price = float(item.get("buy_price") or 0.0)
                             raw_total_amount = float(item.get("total_amount") or 0.0)
                             
+                            item_gst = item.get("gst") or "0%"
+                            gst_rate = 0.0
+                            if item_gst and str(item_gst).endswith('%'):
+                                try:
+                                    gst_rate = float(str(item_gst)[:-1]) / 100.0
+                                except ValueError:
+                                    pass
+
                             if raw_total_amount > 0:
+                                gross_spend_val = raw_total_amount
                                 if gross_qty > 0 and ret_qty > 0:
-                                    item_total_amount = round(raw_total_amount * (net_qty / gross_qty), 2)
+                                    net_spend_val = round(raw_total_amount * (net_qty / gross_qty), 2)
+                                    returns_amt = round(raw_total_amount - net_spend_val, 2)
                                 else:
-                                    item_total_amount = raw_total_amount
+                                    net_spend_val = raw_total_amount
+                                    returns_amt = 0.0
                             else:
                                 if not buy_price and gross_qty > 0:
                                     buy_price = raw_total_amount / gross_qty
-                                item_subtotal = net_qty * buy_price
-                                item_gst_amt = 0.0
-                                item_gst = item.get("gst") or "0%"
-                                if item_gst and str(item_gst).endswith('%'):
-                                    try:
-                                        gst_rate = float(str(item_gst)[:-1]) / 100.0
-                                        item_gst_amt = gst_rate * item_subtotal
-                                    except ValueError:
-                                        pass
-                                item_total_amount = item_subtotal + item_gst_amt
+                                gross_subtotal = gross_qty * buy_price
+                                net_subtotal = net_qty * buy_price
+                                if gst_type == "INCLUSIVE":
+                                    gross_spend_val = gross_subtotal
+                                    net_spend_val = net_subtotal
+                                else:
+                                    gross_spend_val = gross_subtotal + (gross_subtotal * gst_rate)
+                                    net_spend_val = net_subtotal + (net_subtotal * gst_rate)
+                                returns_amt = max(0.0, gross_spend_val - net_spend_val)
+
+                            if gst_type == "INCLUSIVE":
+                                taxable_spend_val = round(net_spend_val / (1.0 + gst_rate), 2) if gst_rate > 0 else net_spend_val
+                                gst_amt_val = round(net_spend_val - taxable_spend_val, 2)
+                            else:
+                                taxable_spend_val = round(net_spend_val / (1.0 + gst_rate), 2) if gst_rate > 0 else net_spend_val
+                                gst_amt_val = round(net_spend_val - taxable_spend_val, 2)
+
                             item_outst = p_outst if idx == 0 else 0.0
                             
                             datas.append(PurchaseAnalyticsDatas(
@@ -864,7 +972,11 @@ class SyncService:
                                 variant_id=var_info.get("id") or item.get("variant_id"),
                                 batch_id=bat_info.get("id") or item.get("batch_id"),
                                 stocks=net_qty,
-                                purchase_amounts=item_total_amount,
+                                purchase_amounts=net_spend_val,
+                                gross_spend=gross_spend_val,
+                                returns_amount=returns_amt,
+                                taxable_spend=taxable_spend_val,
+                                gst_amount=gst_amt_val,
                                 outstanding_amounts=item_outst,
                                 created_at=p_date
                             ))
@@ -886,7 +998,7 @@ class SyncService:
             async with _make_http_client() as client:
                 # Compute landed costs per product/variant/batch from purchases
                 is_gst_reg = await _get_shop_gst_registered(client, shop_id)
-                landed_cost_map = _extract_landed_costs_from_purchases(valid_purchases if 'valid_purchases' in locals() else [], is_gst_reg)
+                cost_with_gst_map, base_cost_map, itc_map, transport_map = _extract_landed_costs_from_purchases(valid_purchases, is_gst_reg)
 
                 orders, status_code = await _fetch_all_pages(client, f"{ORDER_SERVICE_URL}/orders/{shop_id}")
                 if status_code == 200:
@@ -953,7 +1065,21 @@ class SyncService:
                                 if isinstance(repl_items, list):
                                     all_items.extend([it for it in repl_items if isinstance(it, dict)])
 
-                        for item in all_items:
+                        calc_infos = o.get("calculation_infos") or {}
+                        order_transport_charge = float(
+                            (o.get("charges_infos") or {}).get("transport_charge")
+                            or (o.get("charges_infos") or {}).get("shipping_charge")
+                            or (o.get("charges_infos") or {}).get("delivery_charge")
+                            or (o.get("charges") or {}).get("transport")
+                            or (o.get("charges") or {}).get("shipping")
+                            or o.get("delivery_fee")
+                            or o.get("shipping_charge")
+                            or calc_infos.get("delivery_fee")
+                            or calc_infos.get("shipping_charge")
+                            or 0.0
+                        )
+
+                        for item_idx, item in enumerate(all_items):
                             if not isinstance(item, dict):
                                 continue
                             oi_id = item.get("id") or item.get("order_item_id") or ""
@@ -962,9 +1088,8 @@ class SyncService:
                             exc_qty = max(exchanged_qty_map.get(oi_id, 0.0), float(item.get("exchanged_quantity") or 0.0))
                             net_qty = max(0.0, gross_qty - ret_qty - exc_qty)
                             
-                            # Resolve true net sell price per unit including item, line, and bill discounts,
-                            # and extract taxable base excluding inclusive GST for GST sellers
-                            calc_items = (o.get("calculation_infos") or {}).get("items") or []
+                            # Resolve true net sell price per unit including item, line, and bill discounts
+                            calc_items = calc_infos.get("items") or []
                             calc_item_price = None
                             matched_ci = None
                             for ci in calc_items:
@@ -990,35 +1115,82 @@ class SyncService:
                                             calc_item_price = max(0.0, (orig_sp * effective_qty - disc) / effective_qty) if effective_qty > 0 else orig_sp
                                         break
 
-                            sell_price = _extract_actual_sell_price(
-                                item=item,
-                                order_doc=o,
-                                matched_ci=matched_ci,
-                                gross_qty=gross_qty,
-                                calc_item_price=calc_item_price,
-                                is_gst_reg=is_gst_reg,
-                                prod_gst_map=prod_gst_map,
-                            )
+                            # Inclusive selling price per unit
+                            if calc_item_price is not None and calc_item_price > 0:
+                                inclusive_sp = calc_item_price
+                            elif item.get("total_amount") is not None and float(item.get("total_amount") or 0.0) > 0 and gross_qty > 0:
+                                inclusive_sp = float(item.get("total_amount")) / gross_qty
+                            else:
+                                inclusive_sp = float(item.get("sell_price") or item.get("price") or 0.0)
+
                             p_id = item.get("product_id") or item.get("inventory_id") or ""
                             v_id = item.get("variant_id") or ((item.get("variant_infos") or {}).get("variant_id") if isinstance(item.get("variant_infos"), dict) else None)
                             b_id = item.get("batch_id") or ((item.get("batch_infos") or {}).get("batch_id") if isinstance(item.get("batch_infos"), dict) else None)
 
-                            unit_landed_cost = _resolve_item_unit_cost(
+                            # Determine sales GST %
+                            raw_gst = (
+                                (matched_ci.get("gst_rate") if matched_ci else None)
+                                or (matched_ci.get("gst") if matched_ci else None)
+                                or item.get("gst")
+                                or prod_gst_map.get(p_id)
+                                or "0"
+                            )
+                            gst_pct = _parse_gst_pct(raw_gst)
+
+                            if is_gst_reg and gst_pct > 0:
+                                taxable_unit_sp = round(inclusive_sp / (1.0 + (gst_pct / 100.0)), 2)
+                                unit_out_gst = round(inclusive_sp - taxable_unit_sp, 2)
+                            else:
+                                taxable_unit_sp = inclusive_sp
+                                unit_out_gst = 0.0
+
+                            # Resolve procurement costs and ITC
+                            unit_base_cost, unit_cost_with_gst, unit_itc, unit_allocated_trans = _resolve_item_costs_and_taxes(
                                 item=item,
                                 order_doc=o,
                                 matched_ci=matched_ci,
                                 p_id=p_id,
                                 v_id=v_id,
                                 b_id=b_id,
-                                landed_cost_map=landed_cost_map,
+                                cost_with_gst_map=cost_with_gst_map,
+                                base_cost_map=base_cost_map,
+                                itc_map=itc_map,
+                                transport_map=transport_map,
                                 prod_cost_with_gst_map=prod_cost_map,
                                 prod_base_cost_map=prod_base_cost_map,
+                                prod_itc_map=prod_itc_map,
                                 prod_gst_map=prod_gst_map,
+                                is_gst_reg=is_gst_reg,
                             )
-                            
-                            sales_amounts = net_qty * sell_price
-                            cost_amounts = net_qty * unit_landed_cost
-                            profit_amounts = sales_amounts - cost_amounts
+
+                            item_gross_rev = gross_qty * inclusive_sp
+                            item_net_rev = net_qty * inclusive_sp
+                            item_refund_amt = ret_qty * inclusive_sp
+                            item_taxable_rev = net_qty * taxable_unit_sp
+                            item_sales_gst = net_qty * unit_out_gst
+                            item_ret_gst = ret_qty * unit_out_gst
+                            item_itc = net_qty * unit_itc
+
+                            # Cost assignment:
+                            # For GST-registered sellers: COGS is base_cost (excluding input GST, which is claimed via ITC).
+                            # For Non-GST registered sellers: COGS is landed_cost_with_gst (input GST is part of actual expense).
+                            chosen_unit_cost = unit_base_cost if is_gst_reg else unit_cost_with_gst
+                            item_cost_amt = net_qty * chosen_unit_cost
+                            item_base_cost = net_qty * unit_base_cost
+                            item_ret_cost = ret_qty * chosen_unit_cost
+
+                            # Order-level transport charge assigned to the first item of the order
+                            item_trans_charge = (net_qty * unit_allocated_trans) + (order_transport_charge if item_idx == 0 else 0.0)
+
+                            # Profit calculation:
+                            # Gross profit: net selling price - landed cost of goods sold
+                            item_gross_profit = item_net_rev - (net_qty * unit_cost_with_gst)
+                            # For GST registered net profit: taxable_revenue - base_cost - transport
+                            # For Non-GST registered net profit: net_revenue - cost_with_gst - transport
+                            if is_gst_reg:
+                                item_profit = item_taxable_rev - item_base_cost - item_trans_charge
+                            else:
+                                item_profit = item_net_rev - item_cost_amt - item_trans_charge
                             
                             cust_id = o.get("customer_id")
                             if not isinstance(cust_id, str):
@@ -1032,9 +1204,20 @@ class SyncService:
                                 variant_id=v_id,
                                 batch_id=b_id,
                                 stocks=net_qty,
-                                sales_amounts=sales_amounts,
-                                cost_amounts=cost_amounts,
-                                profit_amounts=profit_amounts,
+                                sales_amounts=item_net_rev,
+                                gross_revenue=item_gross_rev,
+                                refund_amount=item_refund_amt,
+                                taxable_revenue=item_taxable_rev,
+                                cost_amounts=item_cost_amt,
+                                base_cost=item_base_cost,
+                                returned_cost=item_ret_cost,
+                                profit_amounts=item_profit,
+                                gross_profit=item_gross_profit,
+                                sales_gst_amount=item_sales_gst,
+                                returned_gst=item_ret_gst,
+                                itc_amount=item_itc,
+                                transport_charges=item_trans_charge,
+                                is_gst_reg=is_gst_reg,
                                 sales_type=o.get("origin") or "OFFLINE",
                                 payment_method=pm_method,
                                 payments=pm_dict,

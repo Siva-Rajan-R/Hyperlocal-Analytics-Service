@@ -71,9 +71,20 @@ class SalesRepo(AnalyticsBaseRepo):
                     "sales_id": s_id,
                     "customer_id": item.customer_id,
                     "sales_amounts": 0.0,
+                    "gross_revenue": 0.0,
+                    "refund_amount": 0.0,
+                    "taxable_revenue": 0.0,
                     "cost_amounts": 0.0,
+                    "base_cost": 0.0,
+                    "returned_cost": 0.0,
                     "profit_amounts": 0.0,
+                    "gross_profit": 0.0,
+                    "sales_gst_amount": 0.0,
+                    "returned_gst": 0.0,
+                    "itc_amount": 0.0,
+                    "transport_charges": 0.0,
                     "stocks": 0.0,
+                    "is_gst_reg": bool(getattr(item, "is_gst_reg", False)),
                     "sales_type": (item.sales_type or "OFFLINE").upper(),
                     "payment_method": getattr(item, "payment_method", None) or "Cash",
                     "payments": getattr(item, "payments", None) or {},
@@ -84,15 +95,36 @@ class SalesRepo(AnalyticsBaseRepo):
                 }
 
             item_sales_amt = float(item.sales_amounts or 0.0)
+            item_gross_amt = float(getattr(item, "gross_revenue", 0.0) or item_sales_amt)
+            item_refund_amt = float(getattr(item, "refund_amount", 0.0) or 0.0)
+            item_taxable_amt = float(getattr(item, "taxable_revenue", 0.0) or item_sales_amt)
             item_cost_amt = float(getattr(item, "cost_amounts", 0.0) or 0.0)
-            item_profit_amt = float(getattr(item, "profit_amounts", 0.0) or 0.0)
-            if item_profit_amt == 0.0:
-                item_profit_amt = item_sales_amt - item_cost_amt
+            item_base_cost = float(getattr(item, "base_cost", 0.0) or item_cost_amt)
+            item_ret_cost = float(getattr(item, "returned_cost", 0.0) or 0.0)
+            item_profit_amt = float(getattr(item, "profit_amounts", 0.0) or (item_sales_amt - item_cost_amt))
+            item_gross_profit = float(getattr(item, "gross_profit", 0.0) or (item_sales_amt - item_cost_amt))
+            item_gst_amt = float(getattr(item, "sales_gst_amount", 0.0) or 0.0)
+            item_ret_gst = float(getattr(item, "returned_gst", 0.0) or 0.0)
+            item_itc_amt = float(getattr(item, "itc_amount", 0.0) or 0.0)
+            item_trans = float(getattr(item, "transport_charges", 0.0) or 0.0)
+            item_is_gst = bool(getattr(item, "is_gst_reg", False))
 
             sales_map[s_id]["sales_amounts"] += item_sales_amt
+            sales_map[s_id]["gross_revenue"] += item_gross_amt
+            sales_map[s_id]["refund_amount"] += item_refund_amt
+            sales_map[s_id]["taxable_revenue"] += item_taxable_amt
             sales_map[s_id]["cost_amounts"] += item_cost_amt
+            sales_map[s_id]["base_cost"] += item_base_cost
+            sales_map[s_id]["returned_cost"] += item_ret_cost
             sales_map[s_id]["profit_amounts"] += item_profit_amt
+            sales_map[s_id]["gross_profit"] += item_gross_profit
+            sales_map[s_id]["sales_gst_amount"] += item_gst_amt
+            sales_map[s_id]["returned_gst"] += item_ret_gst
+            sales_map[s_id]["itc_amount"] += item_itc_amt
+            sales_map[s_id]["transport_charges"] += item_trans
             sales_map[s_id]["stocks"] += float(item.stocks or 0.0)
+            if item_is_gst:
+                sales_map[s_id]["is_gst_reg"] = True
             if getattr(item, "bill_amount", None) and float(item.bill_amount) > sales_map[s_id]["bill_amount"]:
                 sales_map[s_id]["bill_amount"] = float(item.bill_amount)
             if getattr(item, "received_amount", None) and float(item.received_amount) > sales_map[s_id]["received_amount"]:
@@ -139,8 +171,19 @@ class SalesRepo(AnalyticsBaseRepo):
                         "sales_id": s_id,
                         "customer_id": s_data["customer_id"],
                         "sales_amounts": s_data["sales_amounts"],
+                        "gross_revenue": s_data["gross_revenue"],
+                        "refund_amount": s_data["refund_amount"],
+                        "taxable_revenue": s_data["taxable_revenue"],
                         "cost_amounts": s_data["cost_amounts"],
+                        "base_cost": s_data["base_cost"],
+                        "returned_cost": s_data["returned_cost"],
                         "profit_amounts": s_data["profit_amounts"],
+                        "gross_profit": s_data["gross_profit"],
+                        "sales_gst_amount": s_data["sales_gst_amount"],
+                        "returned_gst": s_data["returned_gst"],
+                        "itc_amount": s_data["itc_amount"],
+                        "transport_charges": s_data["transport_charges"],
+                        "is_gst_reg": s_data["is_gst_reg"],
                         "stocks": s_data["stocks"],
                         "sales_type": s_data["sales_type"],
                         "payment_method": s_data["payment_method"],
@@ -179,8 +222,18 @@ class SalesRepo(AnalyticsBaseRepo):
                         }
                     },
                     "total_sales_amounts": {"$sum": "$sales_amounts"},
+                    "gross_revenue": {"$sum": "$gross_revenue"},
+                    "refund_amount": {"$sum": "$refund_amount"},
+                    "taxable_revenue": {"$sum": "$taxable_revenue"},
                     "total_cost": {"$sum": "$cost_amounts"},
+                    "base_cost": {"$sum": "$base_cost"},
+                    "returned_cost": {"$sum": "$returned_cost"},
                     "total_profit": {"$sum": "$profit_amounts"},
+                    "gross_profit": {"$sum": "$gross_profit"},
+                    "sales_gst_amount": {"$sum": "$sales_gst_amount"},
+                    "returned_gst": {"$sum": "$returned_gst"},
+                    "itc_amount": {"$sum": "$itc_amount"},
+                    "transport_charges": {"$sum": "$transport_charges"},
                     "total_sales_stocks": {"$sum": "$stocks"},
                     "total_online_sales": {
                         "$sum": {
@@ -217,6 +270,9 @@ class SalesRepo(AnalyticsBaseRepo):
                     },
                     "total_offline_sales_amount": {
                         "$sum": {"$cond": [{"$ne": ["$sales_type", "ONLINE"]}, "$sales_amounts", 0.0]}
+                    },
+                    "is_gst_reg": {
+                        "$max": "$is_gst_reg"
                     }
                 }
             }
@@ -267,15 +323,47 @@ class SalesRepo(AnalyticsBaseRepo):
 
         if agg_res:
             tot = agg_res[0]
+            is_gst = bool(tot.get("is_gst_reg", False))
+            net_sales = float(tot.get("total_sales_amounts", 0.0))
+            taxable_rev = float(tot.get("taxable_revenue", 0.0))
+            eff_cost = float(tot.get("total_cost", 0.0))
+            base_c = float(tot.get("base_cost", 0.0))
+            out_gst = float(tot.get("sales_gst_amount", 0.0)) if is_gst else 0.0
+            in_itc = float(tot.get("itc_amount", 0.0)) if is_gst else 0.0
+            trans = float(tot.get("transport_charges", 0.0))
+            profit = float(tot.get("total_profit", 0.0))
+
+            net_gst_payable = max(0.0, out_gst - in_itc) if is_gst else 0.0
+            itc_surplus = max(0.0, in_itc - out_gst) if is_gst else 0.0
+
+            denom = taxable_rev if (is_gst and taxable_rev > 0) else (net_sales if net_sales > 0 else 1.0)
+            profit_margin = round((profit / denom) * 100.0, 2) if denom > 0 else 0.0
+            gross_margin = round(((float(tot.get("gross_profit", 0.0))) / (net_sales or 1.0)) * 100.0, 2) if net_sales > 0 else 0.0
+
             await self.overall.update_one(
                 {"shop_id": shop_id},
                 {
                     "$set": {
                         "shop_id": shop_id,
                         "total_sales": int(tot.get("total_sales", 0)),
-                        "total_sales_amounts": float(tot.get("total_sales_amounts", 0.0)),
-                        "total_cost": float(tot.get("total_cost", 0.0)),
-                        "total_profit": float(tot.get("total_profit", 0.0)),
+                        "total_sales_amounts": net_sales,
+                        "gross_revenue": float(tot.get("gross_revenue", 0.0)),
+                        "refund_amount": float(tot.get("refund_amount", 0.0)),
+                        "taxable_revenue": taxable_rev,
+                        "total_cost": eff_cost,
+                        "base_cost": base_c,
+                        "returned_cost": float(tot.get("returned_cost", 0.0)),
+                        "total_profit": profit,
+                        "gross_profit": float(tot.get("gross_profit", 0.0)),
+                        "sales_gst_amount": out_gst,
+                        "returned_gst": float(tot.get("returned_gst", 0.0)),
+                        "itc_amount": in_itc,
+                        "transport_charges": trans,
+                        "net_gst_payable": net_gst_payable,
+                        "itc_surplus": itc_surplus,
+                        "profit_margin": profit_margin,
+                        "gross_margin": gross_margin,
+                        "is_gst_reg": is_gst,
                         "total_sales_stocks": float(tot.get("total_sales_stocks", 0.0)),
                         "total_online_sales": int(tot.get("total_online_sales", 0)),
                         "total_online_sales_amount": float(tot.get("total_online_sales_amount", 0.0)),
@@ -297,8 +385,23 @@ class SalesRepo(AnalyticsBaseRepo):
                         "shop_id": shop_id,
                         "total_sales": 0,
                         "total_sales_amounts": 0.0,
+                        "gross_revenue": 0.0,
+                        "refund_amount": 0.0,
+                        "taxable_revenue": 0.0,
                         "total_cost": 0.0,
+                        "base_cost": 0.0,
+                        "returned_cost": 0.0,
                         "total_profit": 0.0,
+                        "gross_profit": 0.0,
+                        "sales_gst_amount": 0.0,
+                        "returned_gst": 0.0,
+                        "itc_amount": 0.0,
+                        "transport_charges": 0.0,
+                        "net_gst_payable": 0.0,
+                        "itc_surplus": 0.0,
+                        "profit_margin": 0.0,
+                        "gross_margin": 0.0,
+                        "is_gst_reg": False,
                         "total_sales_stocks": 0.0,
                         "total_online_sales": 0,
                         "total_online_sales_amount": 0.0,
@@ -332,8 +435,19 @@ class SalesRepo(AnalyticsBaseRepo):
                         }
                     },
                     "total_sales_amounts": {"$sum": "$sales_amounts"},
+                    "gross_revenue": {"$sum": "$gross_revenue"},
+                    "refund_amount": {"$sum": "$refund_amount"},
+                    "taxable_revenue": {"$sum": "$taxable_revenue"},
                     "total_cost": {"$sum": "$cost_amounts"},
+                    "base_cost": {"$sum": "$base_cost"},
+                    "returned_cost": {"$sum": "$returned_cost"},
                     "total_profit": {"$sum": "$profit_amounts"},
+                    "gross_profit": {"$sum": "$gross_profit"},
+                    "sales_gst_amount": {"$sum": "$sales_gst_amount"},
+                    "returned_gst": {"$sum": "$returned_gst"},
+                    "itc_amount": {"$sum": "$itc_amount"},
+                    "transport_charges": {"$sum": "$transport_charges"},
+                    "is_gst_reg": {"$max": "$is_gst_reg"},
                     "total_sales_stocks": {"$sum": "$stocks"},
                     "total_online_sales": {
                         "$sum": {
@@ -379,6 +493,9 @@ class SalesRepo(AnalyticsBaseRepo):
         await self.daily.delete_many({"shop_id": shop_id})
         for d in daily_res:
             date_str = d["_id"] or datetime.utcnow().strftime("%Y-%m-%d")
+            is_gst = bool(d.get("is_gst_reg", False))
+            out_gst = float(d.get("sales_gst_amount", 0.0)) if is_gst else 0.0
+            in_itc = float(d.get("itc_amount", 0.0)) if is_gst else 0.0
             await self.daily.update_one(
                 {"shop_id": shop_id, "date": date_str},
                 {
@@ -387,8 +504,21 @@ class SalesRepo(AnalyticsBaseRepo):
                         "date": date_str,
                         "total_sales": int(d.get("total_sales", 0)),
                         "total_sales_amounts": float(d.get("total_sales_amounts", 0.0)),
+                        "gross_revenue": float(d.get("gross_revenue", 0.0)),
+                        "refund_amount": float(d.get("refund_amount", 0.0)),
+                        "taxable_revenue": float(d.get("taxable_revenue", 0.0)),
                         "total_cost": float(d.get("total_cost", 0.0)),
+                        "base_cost": float(d.get("base_cost", 0.0)),
+                        "returned_cost": float(d.get("returned_cost", 0.0)),
                         "total_profit": float(d.get("total_profit", 0.0)),
+                        "gross_profit": float(d.get("gross_profit", 0.0)),
+                        "sales_gst_amount": out_gst,
+                        "returned_gst": float(d.get("returned_gst", 0.0)),
+                        "itc_amount": in_itc,
+                        "transport_charges": float(d.get("transport_charges", 0.0)),
+                        "net_gst_payable": max(0.0, out_gst - in_itc) if is_gst else 0.0,
+                        "itc_surplus": max(0.0, in_itc - out_gst) if is_gst else 0.0,
+                        "is_gst_reg": is_gst,
                         "total_sales_stocks": float(d.get("total_sales_stocks", 0.0)),
                         "total_online_sales": int(d.get("total_online_sales", 0)),
                         "total_online_sales_amount": float(d.get("total_online_sales_amount", 0.0)),
@@ -408,7 +538,7 @@ class SalesRepo(AnalyticsBaseRepo):
     ):
         if not start_date and not end_date:
             doc = await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
-            if doc and "payment_breakdown" not in doc:
+            if not doc or "gross_revenue" not in doc or "taxable_revenue" not in doc:
                 await self.recalculate_overall(shop_id)
                 doc = await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
             return doc
@@ -427,31 +557,93 @@ class SalesRepo(AnalyticsBaseRepo):
             {
                 "$group": {
                     "_id": "$shop_id",
-                    "total_sales": {"$sum": 1},
+                    "total_sales": {
+                        "$sum": {
+                            "$cond": [
+                                {"$or": [
+                                    {"$gt": ["$stocks", 0]},
+                                    {"$gt": ["$sales_amounts", 0]}
+                                ]},
+                                1,
+                                0
+                            ]
+                        }
+                    },
                     "total_sales_amounts": {"$sum": "$sales_amounts"},
+                    "gross_revenue": {"$sum": "$gross_revenue"},
+                    "refund_amount": {"$sum": "$refund_amount"},
+                    "taxable_revenue": {"$sum": "$taxable_revenue"},
                     "total_cost": {"$sum": "$cost_amounts"},
+                    "base_cost": {"$sum": "$base_cost"},
+                    "returned_cost": {"$sum": "$returned_cost"},
                     "total_profit": {"$sum": "$profit_amounts"},
+                    "gross_profit": {"$sum": "$gross_profit"},
+                    "sales_gst_amount": {"$sum": "$sales_gst_amount"},
+                    "returned_gst": {"$sum": "$returned_gst"},
+                    "itc_amount": {"$sum": "$itc_amount"},
+                    "transport_charges": {"$sum": "$transport_charges"},
                     "total_sales_stocks": {"$sum": "$stocks"},
                     "total_online_sales": {
-                        "$sum": {"$cond": [{"$eq": ["$sales_type", "ONLINE"]}, 1, 0]}
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [
+                                    {"$eq": ["$sales_type", "ONLINE"]},
+                                    {"$or": [
+                                        {"$gt": ["$stocks", 0]},
+                                        {"$gt": ["$sales_amounts", 0]}
+                                    ]}
+                                ]},
+                                1,
+                                0
+                            ]
+                        }
                     },
                     "total_online_sales_amount": {
                         "$sum": {"$cond": [{"$eq": ["$sales_type", "ONLINE"]}, "$sales_amounts", 0.0]}
                     },
                     "total_offline_sales": {
-                        "$sum": {"$cond": [{"$ne": ["$sales_type", "ONLINE"]}, 1, 0]}
+                        "$sum": {
+                            "$cond": [
+                                {"$and": [
+                                    {"$ne": ["$sales_type", "ONLINE"]},
+                                    {"$or": [
+                                        {"$gt": ["$stocks", 0]},
+                                        {"$gt": ["$sales_amounts", 0]}
+                                    ]}
+                                ]},
+                                1,
+                                0
+                            ]
+                        }
                     },
                     "total_offline_sales_amount": {
                         "$sum": {"$cond": [{"$ne": ["$sales_type", "ONLINE"]}, "$sales_amounts", 0.0]}
                     },
+                    "is_gst_reg": {"$max": "$is_gst_reg"}
                 }
             }
         ])
         res = await cursor.to_list(1)
-        if res and float(res[0].get("total_sales_amounts", 0.0) or 0.0) > 0.0:
+        if res and (float(res[0].get("total_sales_amounts", 0.0) or 0.0) > 0.0 or int(res[0].get("total_sales", 0)) > 0):
             res[0].pop("_id", None)
             res[0]["shop_id"] = shop_id
             
+            is_gst = bool(res[0].get("is_gst_reg", False))
+            net_sales = float(res[0].get("total_sales_amounts", 0.0))
+            taxable_rev = float(res[0].get("taxable_revenue", 0.0))
+            out_gst = float(res[0].get("sales_gst_amount", 0.0)) if is_gst else 0.0
+            in_itc = float(res[0].get("itc_amount", 0.0)) if is_gst else 0.0
+            profit = float(res[0].get("total_profit", 0.0))
+
+            res[0]["sales_gst_amount"] = out_gst
+            res[0]["itc_amount"] = in_itc
+            res[0]["net_gst_payable"] = max(0.0, out_gst - in_itc) if is_gst else 0.0
+            res[0]["itc_surplus"] = max(0.0, in_itc - out_gst) if is_gst else 0.0
+
+            denom = taxable_rev if (is_gst and taxable_rev > 0) else (net_sales if net_sales > 0 else 1.0)
+            res[0]["profit_margin"] = round((profit / denom) * 100.0, 2) if denom > 0 else 0.0
+            res[0]["gross_margin"] = round(((float(res[0].get("gross_profit", 0.0))) / (net_sales or 1.0)) * 100.0, 2) if net_sales > 0 else 0.0
+
             # Compute filtered payment breakdown and totals
             filtered_orders = await self.breakdown.find(filters).to_list(length=None)
             f_payment_breakdown = {

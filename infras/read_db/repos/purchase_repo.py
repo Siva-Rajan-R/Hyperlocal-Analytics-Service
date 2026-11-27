@@ -61,12 +61,20 @@ class PurchaseRepo(AnalyticsBaseRepo):
                     "supplier_id": item.supplier_id or "",
                     "stocks": 0.0,
                     "purchase_amounts": 0.0,
+                    "gross_spend": 0.0,
+                    "returns_amount": 0.0,
+                    "taxable_spend": 0.0,
+                    "gst_amount": 0.0,
                     "outstanding_amounts": float(item.outstanding_amounts or 0.0),
                     "created_at": item.created_at,
                     "date": _extract_date_str(item.created_at)
                 }
             purchases_map[p_id]["stocks"] += float(item.stocks or 0.0)
             purchases_map[p_id]["purchase_amounts"] += float(item.purchase_amounts or 0.0)
+            purchases_map[p_id]["gross_spend"] += float(getattr(item, "gross_spend", 0.0) or item.purchase_amounts or 0.0)
+            purchases_map[p_id]["returns_amount"] += float(getattr(item, "returns_amount", 0.0) or 0.0)
+            purchases_map[p_id]["taxable_spend"] += float(getattr(item, "taxable_spend", 0.0) or item.purchase_amounts or 0.0)
+            purchases_map[p_id]["gst_amount"] += float(getattr(item, "gst_amount", 0.0) or 0.0)
             if item.outstanding_amounts is not None and float(item.outstanding_amounts) > 0:
                 purchases_map[p_id]["outstanding_amounts"] = float(item.outstanding_amounts)
 
@@ -102,6 +110,10 @@ class PurchaseRepo(AnalyticsBaseRepo):
                             "supplier_id": p_data["supplier_id"],
                             "stocks": p_data["stocks"],
                             "purchase_amounts": p_data["purchase_amounts"],
+                            "gross_spend": p_data["gross_spend"],
+                            "returns_amount": p_data["returns_amount"],
+                            "taxable_spend": p_data["taxable_spend"],
+                            "gst_amount": p_data["gst_amount"],
                             "outstanding_amounts": p_data["outstanding_amounts"],
                             "date": p_data["date"],
                             "created_at": p_data["created_at"],
@@ -129,23 +141,39 @@ class PurchaseRepo(AnalyticsBaseRepo):
                     "_id": "$shop_id",
                     "total_purchase": {"$sum": 1},
                     "total_purchase_amounts": {"$sum": "$purchase_amounts"},
+                    "gross_spend": {"$sum": {"$ifNull": ["$gross_spend", "$purchase_amounts"]}},
+                    "total_returns": {"$sum": {"$ifNull": ["$returns_amount", 0.0]}},
+                    "taxable_spend": {"$sum": {"$ifNull": ["$taxable_spend", "$purchase_amounts"]}},
+                    "gst_amount": {"$sum": {"$ifNull": ["$gst_amount", 0.0]}},
                     "total_purchase_stocks": {"$sum": "$stocks"},
-                    "total_outstanding_amounts": {"$sum": "$outstanding_amounts"}
+                    "total_outstanding_amounts": {"$sum": "$outstanding_amounts"},
+                    "returns_count": {
+                        "$sum": {"$cond": [{"$gt": ["$returns_amount", 0]}, 1, 0]}
+                    }
                 }
             }
         ]
         agg_res = await self.breakdown.aggregate(pipeline).to_list(1)
         if agg_res:
             tot = agg_res[0]
+            pur_amt = float(tot.get("total_purchase_amounts", 0.0))
+            out_amt = float(tot.get("total_outstanding_amounts", 0.0))
+            paid_amt = max(0.0, pur_amt - out_amt)
             await self.overall.update_one(
                 {"shop_id": shop_id},
                 {
                     "$set": {
                         "shop_id": shop_id,
                         "total_purchase": int(tot.get("total_purchase", 0)),
-                        "total_purchase_amounts": float(tot.get("total_purchase_amounts", 0.0)),
+                        "total_purchase_amounts": pur_amt,
+                        "gross_spend": float(tot.get("gross_spend", pur_amt)),
+                        "total_returns": float(tot.get("total_returns", 0.0)),
+                        "taxable_spend": float(tot.get("taxable_spend", pur_amt)),
+                        "gst_amount": float(tot.get("gst_amount", 0.0)),
                         "total_purchase_stocks": float(tot.get("total_purchase_stocks", 0.0)),
-                        "total_outstanding_amounts": float(tot.get("total_outstanding_amounts", 0.0)),
+                        "total_outstanding_amounts": out_amt,
+                        "paid_amount": paid_amt,
+                        "returns_count": int(tot.get("returns_count", 0)),
                         "timestamp": datetime.utcnow(),
                     }
                 },
@@ -159,8 +187,14 @@ class PurchaseRepo(AnalyticsBaseRepo):
                         "shop_id": shop_id,
                         "total_purchase": 0,
                         "total_purchase_amounts": 0.0,
+                        "gross_spend": 0.0,
+                        "total_returns": 0.0,
+                        "taxable_spend": 0.0,
+                        "gst_amount": 0.0,
                         "total_purchase_stocks": 0.0,
                         "total_outstanding_amounts": 0.0,
+                        "paid_amount": 0.0,
+                        "returns_count": 0,
                         "timestamp": datetime.utcnow(),
                     }
                 },
@@ -175,6 +209,10 @@ class PurchaseRepo(AnalyticsBaseRepo):
                     "_id": "$date",
                     "total_purchase": {"$sum": 1},
                     "total_purchase_amounts": {"$sum": "$purchase_amounts"},
+                    "gross_spend": {"$sum": {"$ifNull": ["$gross_spend", "$purchase_amounts"]}},
+                    "total_returns": {"$sum": {"$ifNull": ["$returns_amount", 0.0]}},
+                    "taxable_spend": {"$sum": {"$ifNull": ["$taxable_spend", "$purchase_amounts"]}},
+                    "gst_amount": {"$sum": {"$ifNull": ["$gst_amount", 0.0]}},
                     "total_purchase_stocks": {"$sum": "$stocks"},
                     "total_outstanding_amounts": {"$sum": "$outstanding_amounts"},
                     "latest_timestamp": {"$max": "$timestamp"}
@@ -193,6 +231,10 @@ class PurchaseRepo(AnalyticsBaseRepo):
                         "date": date_str,
                         "total_purchase": int(d.get("total_purchase", 0)),
                         "total_purchase_amounts": float(d.get("total_purchase_amounts", 0.0)),
+                        "gross_spend": float(d.get("gross_spend", 0.0)),
+                        "total_returns": float(d.get("total_returns", 0.0)),
+                        "taxable_spend": float(d.get("taxable_spend", 0.0)),
+                        "gst_amount": float(d.get("gst_amount", 0.0)),
                         "total_purchase_stocks": float(d.get("total_purchase_stocks", 0.0)),
                         "total_outstanding_amounts": float(d.get("total_outstanding_amounts", 0.0)),
                         "timestamp": d.get("latest_timestamp") or datetime.utcnow()
@@ -209,7 +251,11 @@ class PurchaseRepo(AnalyticsBaseRepo):
         supplier_id: Optional[str] = None,
     ):
         if not start_date and not end_date and not supplier_id:
-            return await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+            doc = await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+            if not doc or "gross_spend" not in doc or "taxable_spend" not in doc:
+                await self.recalculate_overall(shop_id)
+                doc = await self.overall.find_one({"shop_id": shop_id}, {"_id": 0})
+            return doc
 
         match_filter = {"shop_id": shop_id}
         if supplier_id:
@@ -229,8 +275,15 @@ class PurchaseRepo(AnalyticsBaseRepo):
                     "_id": "$shop_id",
                     "total_purchase": {"$sum": 1},
                     "total_purchase_amounts": {"$sum": "$purchase_amounts"},
+                    "gross_spend": {"$sum": {"$ifNull": ["$gross_spend", "$purchase_amounts"]}},
+                    "total_returns": {"$sum": {"$ifNull": ["$returns_amount", 0.0]}},
+                    "taxable_spend": {"$sum": {"$ifNull": ["$taxable_spend", "$purchase_amounts"]}},
+                    "gst_amount": {"$sum": {"$ifNull": ["$gst_amount", 0.0]}},
                     "total_purchase_stocks": {"$sum": "$stocks"},
                     "total_outstanding_amounts": {"$sum": "$outstanding_amounts"},
+                    "returns_count": {
+                        "$sum": {"$cond": [{"$gt": ["$returns_amount", 0]}, 1, 0]}
+                    }
                 }
             }
         ]
@@ -238,6 +291,9 @@ class PurchaseRepo(AnalyticsBaseRepo):
         if res and float(res[0].get("total_purchase_amounts", 0.0) or 0.0) > 0.0:
             res[0].pop("_id", None)
             res[0]["shop_id"] = shop_id
+            pur_amt = float(res[0].get("total_purchase_amounts", 0.0))
+            out_amt = float(res[0].get("total_outstanding_amounts", 0.0))
+            res[0]["paid_amount"] = max(0.0, pur_amt - out_amt)
             return res[0]
 
         # Fallback: check Supplier breakdown/overall for purchase amounts (only when NO date filter is specified)

@@ -4,15 +4,19 @@ from datetime import datetime
 
 
 class PurchaseAnalyticsDatas(BaseModel):
-    purchase_id:str
-    supplier_id:str
-    product_id:str
-    variant_id:Optional[str]=None
-    batch_id:Optional[str]=None
-    stocks:Optional[float]=0
-    purchase_amounts:Optional[float]=0
-    outstanding_amounts:Optional[float]=0
-    created_at:Optional[str]=None
+    purchase_id: str
+    supplier_id: str
+    product_id: str
+    variant_id: Optional[str] = None
+    batch_id: Optional[str] = None
+    stocks: Optional[float] = 0
+    purchase_amounts: Optional[float] = 0
+    outstanding_amounts: Optional[float] = 0
+    gross_spend: Optional[float] = 0.0
+    returns_amount: Optional[float] = 0.0
+    taxable_spend: Optional[float] = 0.0
+    gst_amount: Optional[float] = 0.0
+    created_at: Optional[str] = None
 
 
 class PurchaseAnalyticsSchema(BaseModel):
